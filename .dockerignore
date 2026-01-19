@@ -1,0 +1,12 @@
+.dockerignore
+Dockerfile
+docker-compose.yaml
+.gitignore
+LICENSE
+\*.md
+
+.git/
+**pycache**/
+\*.egg-info/
+docs/
+tests/

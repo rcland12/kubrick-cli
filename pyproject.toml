@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kubrick-cli"
+version = "0.1.1"
+description = "A CLI tool for AI-assisted coding using Triton LLM backend"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    {name = "Russell Land", email = "rcland12@gmail.com"}
+]
+dependencies = [
+    "rich>=13.0.0",
+    "prompt_toolkit>=3.0.0",
+]
+
+[project.scripts]
+kubrick = "kubrick_cli.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kubrick_cli*"]
+exclude = ["tests*", "temp*", "unused*"]

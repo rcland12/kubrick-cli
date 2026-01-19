@@ -1,0 +1,17 @@
+services:
+  kubrick:
+    container_name: kubrick-cli
+    image: rcland12/kubrick-cli:latest
+    build:
+      context: .
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    network_mode: host
+    stdin_open: true
+    tty: true
+    volumes:
+      - ~/.kubrick:/kubrick
+      - .:/workspace
+    working_dir: /workspace
+    command: []
