@@ -16,15 +16,10 @@ class KubrickConfig:
         Args:
             skip_wizard: Skip setup wizard even if config doesn't exist (for testing)
         """
-        # Check if running in Docker
-        import os
-        if os.environ.get("KUBRICK_IN_DOCKER"):
-            # Docker mode: use /kubrick (mounted volume)
-            self.kubrick_dir = Path("/kubrick")
-        else:
-            # Normal mode: use ~/.kubrick
-            self.kubrick_dir = Path.home() / ".kubrick"
-
+        # Use ~/.kubrick in all environments (Docker and non-Docker)
+        # In Docker, this resolves to /home/kubrick/.kubrick
+        # Outside Docker, this resolves to the current user's home directory
+        self.kubrick_dir = Path.home() / ".kubrick"
         self.config_file = self.kubrick_dir / "config.json"
         self.conversations_dir = self.kubrick_dir / "conversations"
 

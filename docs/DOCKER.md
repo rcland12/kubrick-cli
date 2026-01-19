@@ -13,8 +13,10 @@ cd /path/to/your/project
 # Run kubrick
 docker run --rm -it \
   --network host \
-  -v ~/.kubrick:/kubrick \
-  -v $(pwd):/workspace \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
   rcland12/kubrick-cli
 ```
 
@@ -24,9 +26,11 @@ docker run --rm -it \
 # Navigate to your project directory
 cd /path/to/your/project
 
-# Run kubrick
-docker compose run --rm kubrick
+# Run kubrick (replace with your kubrick-cli path)
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
 ```
+
+**Note:** The docker-compose.yaml file is in the kubrick-cli repository. Use the `-f` flag to reference it from any project directory. See [Using Docker Compose](#using-docker-compose) for details.
 
 ## Basic Usage
 
@@ -36,8 +40,10 @@ docker compose run --rm kubrick
 cd /path/to/your/project
 docker run --rm -it \
   --network host \
-  -v ~/.kubrick:/kubrick \
-  -v $(pwd):/workspace \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
   rcland12/kubrick-cli
 ```
 
@@ -46,8 +52,10 @@ docker run --rm -it \
 ```bash
 docker run --rm -it \
   --network host \
-  -v ~/.kubrick:/kubrick \
-  -v $(pwd):/workspace \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
   rcland12/kubrick-cli \
   --triton-url my-server:8000
 ```
@@ -57,8 +65,10 @@ docker run --rm -it \
 ```bash
 docker run --rm -it \
   --network host \
-  -v ~/.kubrick:/kubrick \
-  -v $(pwd):/workspace \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
   rcland12/kubrick-cli \
   --load 20240118_143022
 ```
@@ -68,8 +78,10 @@ docker run --rm -it \
 ```bash
 docker run --rm -it \
   --network host \
-  -v ~/.kubrick:/kubrick \
-  -v $(pwd):/workspace \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
   rcland12/kubrick-cli \
   --model-name my-llm-model
 ```
@@ -87,8 +99,10 @@ docker run --rm -it \
 ### Volume Mounts
 
 ```bash
--v ~/.kubrick:/kubrick      # Config and conversation history
--v $(pwd):/workspace        # Your project files
+-v ${HOME}:/home/kubrick             # Config and conversation history
+-v ${PWD}:/workspace                 # Your project files
+-v /etc/localtime:/etc/localtime:ro  # (optional) Ensure the correct time
+-v /etc/timezone:/etc/timezone:ro    # (optional) Ensure the correct timezone
 ```
 
 **Important:** Always run from your project directory. Only files in the current directory will be accessible.
@@ -123,8 +137,10 @@ Override defaults with environment variables:
 ```bash
 docker run --rm -it \
   --network host \
-  -v ~/.kubrick:/kubrick \
-  -v $(pwd):/workspace \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
   -e TRITON_URL=my-server:8000 \
   -e TRITON_MODEL_NAME=custom-model \
   rcland12/kubrick-cli
@@ -144,16 +160,6 @@ You: exit
 docker run ... rcland12/kubrick-cli
 ```
 
-## Docker Mode Detection
-
-When running in Docker, you'll see:
-
-```
-ℹ️  Running in Docker mode
-→ Files are accessible only within /workspace (mounted from your current directory)
-→ Config is saved to ~/.kubrick (mounted volume)
-```
-
 ## File Access
 
 ### What's Accessible
@@ -169,7 +175,7 @@ docker run ... -v $(pwd):/workspace ...
 **Configuration:**
 
 ```bash
--v ~/.kubrick:/kubrick
+-v ~/.kubrick:/home/kubrick/.kubrick
 # Config and conversations persist
 ```
 
@@ -193,18 +199,34 @@ Run from each project directory:
 ```bash
 # Project 1
 cd ~/projects/app1
-docker run --rm -it --network host -v ~/.kubrick:/kubrick -v $(pwd):/workspace rcland12/kubrick-cli
+docker run --rm -it \
+  --network host \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
+  rcland12/kubrick-cli
 
 # Project 2
 cd ~/projects/app2
-docker run --rm -it --network host -v ~/.kubrick:/kubrick -v $(pwd):/workspace rcland12/kubrick-cli
+docker run --rm -it \
+  --network host \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
+  rcland12/kubrick-cli
 ```
 
 Configuration and history are shared via `~/.kubrick`.
 
 ## Using Docker Compose
 
-If you prefer docker-compose, reference the file `docker-compose.yaml`:
+Docker Compose provides a convenient way to run Kubrick without typing long docker commands. The kubrick-cli repository includes a `docker-compose.yaml` file that you can reference from any project directory.
+
+### Configuration File
+
+The `docker-compose.yaml` file in the kubrick-cli repository:
 
 ```yaml
 services:
@@ -220,24 +242,92 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ~/.kubrick:/kubrick
-      - .:/workspace
-    working_dir: /workspace
+      - ${HOME}:/home/kubrick
+      - ${PWD}:/workspace
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     command: []
 ```
 
-**Run:**
+### Usage from Any Project Directory
+
+**This is the recommended approach.** You don't need to copy the docker-compose.yaml file to each project. Instead, reference it using the `-f` flag:
 
 ```bash
-cd /path/to/your/project
-docker compose run --rm kubrick
+# Navigate to YOUR project (the one you want to work on)
+cd ~/dev/your-project
+
+# Run kubrick using the compose file from kubrick-cli repo
+docker compose -f /path/to/kubrick-cli/docker-compose.yaml run --rm kubrick
 ```
+
+**Example workflow:**
+
+```bash
+# Work on project 1
+cd ~/dev/my-web-app
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
+
+# Work on project 2
+cd ~/dev/my-api-server
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
+
+# Work on project 3
+cd ~/projects/data-pipeline
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
+```
+
+**How it works:**
+
+- `${PWD}` (your current directory) is mounted to `/workspace` in the container
+- You can work on any project by just changing directories
+- No need to copy docker-compose.yaml to each project
 
 **With arguments:**
 
 ```bash
-docker compose run --rm kubrick --triton-url my-server:8000
+cd ~/dev/your-project
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick --triton-url my-server:8000
 ```
+
+### Usage from kubrick-cli Directory
+
+If you're in the kubrick-cli repository directory, you can run without the `-f` flag:
+
+```bash
+# If you're already in the kubrick-cli directory
+cd /path/to/kubrick-cli
+docker compose run --rm kubrick
+```
+
+**Note:** This will mount the kubrick-cli directory itself to `/workspace`, so you'd be working on the kubrick-cli code, not your actual projects. This is only useful for developing kubrick itself.
+
+### Creating a Shell Alias
+
+For convenience, create an alias that references the compose file:
+
+**Bash/Zsh (~/.bashrc or ~/.zshrc):**
+
+```bash
+# Replace with your actual path to kubrick-cli
+alias kubrick='docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick'
+```
+
+**Usage:**
+
+```bash
+cd ~/dev/any-project
+kubrick
+kubrick --triton-url my-server:8000
+kubrick --load 20240118_143022
+```
+
+### Key Points
+
+- **Always navigate to your project directory first** before running the command
+- The `-f` flag tells docker compose where to find the yaml file
+- The `${PWD}` variable in docker-compose.yaml automatically uses your current directory
+- Configuration and conversation history are shared across all projects via `~/.kubrick`
 
 ## Troubleshooting
 
@@ -305,23 +395,6 @@ docker compose run --rm kubrick --triton-url my-server:8000
    chmod u+w /path/to/project
    ```
 
-### Config Not Saving
-
-**Error:** Configuration resets between runs
-
-**Solutions:**
-
-1. Include config mount:
-
-   ```bash
-   -v ~/.kubrick:/kubrick
-   ```
-
-2. Verify directory exists:
-   ```bash
-   mkdir -p ~/.kubrick
-   ```
-
 ## Shell Alias
 
 For convenience, create a shell alias:
@@ -329,7 +402,7 @@ For convenience, create a shell alias:
 **Bash/Zsh (~/.bashrc or ~/.zshrc):**
 
 ```bash
-alias kubrick='docker run --rm -it --network host -v ~/.kubrick:/kubrick -v $(pwd):/workspace rcland12/kubrick-cli'
+alias kubrick='docker run --rm -it --network host -v ${HOME}:/home/kubrick -v ${PWD}:/workspace -v /etc/localtime:/etc/localtime:ro -v /etc/timezone:/etc/timezone:ro rcland12/kubrick-cli'
 ```
 
 **Usage:**

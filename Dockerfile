@@ -23,11 +23,13 @@ SHELL ["/bin/sh", "-euxc"]
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV KUBRICK_IN_DOCKER=0
 ENV USER=kubrick
 ENV HOME=/home/${USER}
 
-RUN groupadd -g ${GID} ${USER} && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g ${GID} ${USER} && \
     useradd -m -u ${UID} -g ${GID} -s /bin/sh ${USER} && \
     mkdir -p /workspace && \
     chown -R ${USER}:${USER} ${HOME} /workspace

@@ -7,12 +7,12 @@ services:
       args:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
-    user: ${UID:-1000}:${GID:-1000}
     network_mode: host
     stdin_open: true
     tty: true
     volumes:
       - ${HOME}:/home/kubrick
       - ${PWD}:/workspace
-    working_dir: /workspace
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     command: []

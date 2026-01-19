@@ -529,14 +529,6 @@ Assistant: I'll first read the file to understand its structure.
             )
         )
 
-        # Show Docker mode notice
-        if os.environ.get("KUBRICK_IN_DOCKER"):
-            console.print(
-                "[yellow]ℹ️  Running in Docker mode[/yellow]\n"
-                "[dim]→ Files are accessible only within /workspace (mounted from your current directory)[/dim]\n"
-                "[dim]→ Config is saved to ~/.kubrick (mounted volume)[/dim]"
-            )
-
         # Check provider health
         if not self.provider.is_healthy():
             console.print(
