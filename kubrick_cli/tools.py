@@ -70,7 +70,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "list_files",
-        "description": "List files matching a glob pattern (e.g., '*.py', '**/*.js')",
+        "description": "List files and directories matching a glob pattern (e.g., '*.py' for current dir, '**/*.py' for recursive, '**/*' for all)",
         "read_only": True,
         "estimated_duration": 1,
         "parameters": {
@@ -265,19 +265,34 @@ class ToolExecutor:
         directory = params.get("directory", ".")
         search_dir = self._resolve_path(directory)
 
-        # Use glob to find matching files
-        matches = []
-        for match in search_dir.glob(pattern):
-            if match.is_file():
-                rel_path = match.relative_to(search_dir)
-                matches.append(str(rel_path))
+        # Use glob to find matching files and directories
+        files = []
+        directories = []
 
-        matches.sort()
+        for match in search_dir.glob(pattern):
+            rel_path = match.relative_to(search_dir)
+            if match.is_file():
+                files.append(str(rel_path))
+            elif match.is_dir():
+                directories.append(str(rel_path) + "/")
+
+        files.sort()
+        directories.sort()
+
+        # Combine results
+        matches = directories + files
 
         if not matches:
-            result = f"No files found matching pattern: {pattern}"
+            result = f"No files or directories found matching pattern: {pattern}"
         else:
-            result = f"Found {len(matches)} files:\n" + "\n".join(matches)
+            dir_count = len(directories)
+            file_count = len(files)
+            result = f"Found {dir_count} directories and {file_count} files:\n"
+
+            if directories:
+                result += "\nDirectories:\n" + "\n".join(directories)
+            if files:
+                result += "\n\nFiles:\n" + "\n".join(files)
 
         return {"success": True, "result": result}
 

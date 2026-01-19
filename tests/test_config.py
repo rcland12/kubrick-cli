@@ -13,7 +13,7 @@ def test_config():
 
     # Initialize config
     print("1. Initializing config...")
-    config = KubrickConfig()
+    config = KubrickConfig(skip_wizard=True)
     print(f"   ✓ Config directory: {config.kubrick_dir}")
     print(f"   ✓ Config file: {config.config_file}")
     print(f"   ✓ Conversations dir: {config.conversations_dir}")
@@ -87,8 +87,6 @@ def test_config():
     print(f"Configuration is stored at: {config.config_file}")
     print(f"Conversations are stored at: {config.conversations_dir}")
     print("")
-
-    return True
 
 
 if __name__ == "__main__":

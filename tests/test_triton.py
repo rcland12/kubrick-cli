@@ -13,30 +13,17 @@ def test_http_protocol():
 
     # Initialize client
     print("Test 1: Initializing HTTP client...")
-    try:
-        client = TritonLLMClient(
-            url="localhost:8000",
-            model_name="llm_decoupled",
-        )
-        print("  ✓ Client initialized")
-    except Exception as e:
-        print(f"  ✗ Failed to initialize: {e}")
-        return False
+    client = TritonLLMClient(
+        url="localhost:8000",
+        model_name="llm_decoupled",
+    )
+    print("  ✓ Client initialized")
 
     # Test server health
     print("\nTest 2: Checking if server is alive...")
-    try:
-        is_healthy = client.is_healthy()
-        if is_healthy:
-            print("  ✓ Server is alive and healthy")
-        else:
-            print("  ✗ Server is not responding")
-            return False
-    except Exception as e:
-        print(f"  ✗ Error checking server health: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return False
+    is_healthy = client.is_healthy()
+    assert is_healthy, "Server is not responding"
+    print("  ✓ Server is alive and healthy")
 
     # Test streaming inference
     print("\nTest 3: Testing streaming inference...")
@@ -46,34 +33,23 @@ def test_http_protocol():
         {"role": "user", "content": "Say hello in one word."}
     ]
 
-    try:
-        full_response = ""
-        chunk_count = 0
+    full_response = ""
+    chunk_count = 0
 
-        for chunk in client.generate_streaming(messages):
-            chunk_count += 1
-            full_response += chunk
-            # Print first few chunks
-            if chunk_count <= 3:
-                print(f"  ← Received chunk {chunk_count}: {repr(chunk)}")
+    for chunk in client.generate_streaming(messages):
+        chunk_count += 1
+        full_response += chunk
+        # Print first few chunks
+        if chunk_count <= 3:
+            print(f"  ← Received chunk {chunk_count}: {repr(chunk)}")
 
-        if chunk_count > 3:
-            print(f"  ← ... ({chunk_count - 3} more chunks)")
+    if chunk_count > 3:
+        print(f"  ← ... ({chunk_count - 3} more chunks)")
 
-        print(f"\n  ✓ Full response: {repr(full_response)}")
+    print(f"\n  ✓ Full response: {repr(full_response)}")
 
-        if full_response:
-            print("  ✓ Streaming inference PASSED!")
-            return True
-        else:
-            print("  ✗ Empty response received")
-            return False
-
-    except Exception as e:
-        print(f"  ✗ Error during streaming inference: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return False
+    assert full_response, "Empty response received"
+    print("  ✓ Streaming inference PASSED!")
 
 
 def test_non_streaming():
@@ -82,37 +58,22 @@ def test_non_streaming():
     print(f"Testing Non-Streaming Response")
     print(f"{'=' * 60}\n")
 
-    try:
-        client = TritonLLMClient(
-            url="localhost:8000",
-            model_name="llm_decoupled",
-        )
-        print("  ✓ Client initialized")
-    except Exception as e:
-        print(f"  ✗ Failed to initialize: {e}")
-        return False
+    client = TritonLLMClient(
+        url="localhost:8000",
+        model_name="llm_decoupled",
+    )
+    print("  ✓ Client initialized")
 
     print("\nTest: Sending non-streaming request...")
     messages = [
         {"role": "user", "content": "Count from 1 to 3."}
     ]
 
-    try:
-        response = client.generate(messages)
-        print(f"  ✓ Full response: {repr(response)}")
+    response = client.generate(messages)
+    print(f"  ✓ Full response: {repr(response)}")
 
-        if response:
-            print("  ✓ Non-streaming inference PASSED!")
-            return True
-        else:
-            print("  ✗ Empty response received")
-            return False
-
-    except Exception as e:
-        print(f"  ✗ Error during inference: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return False
+    assert response, "Empty response received"
+    print("  ✓ Non-streaming inference PASSED!")
 
 
 def main() -> int:

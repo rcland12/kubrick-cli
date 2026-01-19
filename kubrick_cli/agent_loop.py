@@ -207,9 +207,7 @@ class AgentLoop:
             )
 
             if is_complete:
-                console.print(
-                    f"\n[green]✓ Task complete ({reason})[/green]"
-                )
+                console.print(f"\n[green]✓ Task complete ({reason})[/green]")
                 return {
                     "success": True,
                     "completion_reason": reason,

@@ -8,6 +8,7 @@ version = "0.1.1"
 description = "A CLI tool for AI-assisted coding using Triton LLM backend"
 readme = "README.md"
 requires-python = ">=3.8"
+license = {text = "MIT"}
 authors = [
     {name = "Russell Land", email = "rcland12@gmail.com"}
 ]
@@ -15,6 +16,11 @@ dependencies = [
     "rich>=13.0.0",
     "prompt_toolkit>=3.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/rcland12/kubrick-cli"
+Repository = "https://github.com/rcland12/kubrick-cli"
+Issues = "https://github.com/rcland12/kubrick-cli/issues"
 
 [project.scripts]
 kubrick = "kubrick_cli.main:main"
@@ -24,6 +30,8 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "black>=22.0.0",
+    "build>=1.0.0",
+    "twine>=5.0.0",
 ]
 
 [tool.setuptools.packages.find]

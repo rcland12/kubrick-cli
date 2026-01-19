@@ -11,7 +11,7 @@ def test_tool_call_parsing():
     print("Testing Tool Call Parsing")
     print("="*60 + "\n")
 
-    config = KubrickConfig()
+    config = KubrickConfig(skip_wizard=True)
     cli = KubrickCLI(config=config)
 
     # Test 1: Correct format with markdown fence
@@ -107,8 +107,6 @@ Then I'll write a new file:
     print("Tool calling parsing is working correctly!")
     print("Both primary parser (with markdown fence) and fallback parser")
     print("(without fence) are functioning as expected.\n")
-
-    return True
 
 
 if __name__ == "__main__":

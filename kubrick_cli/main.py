@@ -19,11 +19,12 @@ from .agent_loop import AgentLoop
 from .classifier import TaskClassifier
 from .config import KubrickConfig
 from .display import DisplayManager
+from .execution_strategy import ExecutionStrategy
 from .planning import PlanningPhase
+from .providers.factory import ProviderFactory
 from .safety import SafetyConfig, SafetyManager
 from .scheduler import ToolScheduler
 from .tools import TOOL_DEFINITIONS, ToolExecutor, get_tools_prompt
-from .triton_client import TritonLLMClient
 
 console = Console()
 
@@ -34,35 +35,41 @@ class KubrickCLI:
     def __init__(
         self,
         config: KubrickConfig,
-        triton_url: str = None,
-        model_name: str = None,
         working_dir: str = None,
-        use_openai: bool = None,
         conversation_id: str = None,
+        provider_override: str = None,
     ):
         """
         Initialize Kubrick CLI.
 
         Args:
             config: KubrickConfig instance
-            triton_url: Triton server HTTP URL (overrides config)
-            model_name: Triton model name (overrides config)
             working_dir: Working directory for file operations (overrides config)
-            use_openai: Whether to route requests to OpenAI (overrides config)
             conversation_id: Load existing conversation by ID
+            provider_override: Override configured provider (for testing)
         """
         self.config = config
 
-        # Use provided values or fall back to config
-        triton_url = triton_url or config.get("triton_url", "localhost:8000")
-        model_name = model_name or config.get("model_name", "llm_decoupled")
-        self.use_openai = (
-            use_openai
-            if use_openai is not None
-            else config.get("use_openai", False)
-        )
+        # Override provider if specified
+        if provider_override:
+            config.set("provider", provider_override)
 
-        self.client = TritonLLMClient(url=triton_url, model_name=model_name)
+        # Create provider using factory
+        try:
+            self.provider = ProviderFactory.create_provider(config.get_all())
+            console.print(
+                f"[dim]→ Using {self.provider.provider_name} provider "
+                f"with model {self.provider.model_name}[/dim]"
+            )
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            console.print(
+                "[yellow]Please run the setup wizard or check your configuration.[/yellow]"
+            )
+            raise
+
+        # Alias for backward compatibility
+        self.client = self.provider
 
         # Initialize safety manager
         self.safety_manager = SafetyManager(
@@ -91,28 +98,27 @@ class KubrickCLI:
         max_tools_per_turn = config.get("max_tools_per_turn", 5)
         timeout_seconds = config.get("total_timeout_seconds", 600)
 
-        stream_options = {}
-        if self.use_openai:
-            stream_options["use_openai"] = True
-
         self.agent_loop = AgentLoop(
-            llm_client=self.client,
+            llm_client=self.provider,
             tool_executor=self.tool_executor,
             max_iterations=max_iterations,
             max_tools_per_turn=max_tools_per_turn,
             timeout_seconds=timeout_seconds,
-            stream_options=stream_options,
+            stream_options={},
             display_manager=self.display_manager,
             tool_scheduler=self.tool_scheduler,
         )
 
         # Initialize task classifier and planning phase
-        self.classifier = TaskClassifier(self.client)
+        self.classifier = TaskClassifier(self.provider)
         self.planning_phase = PlanningPhase(
-            llm_client=self.client,
+            llm_client=self.provider,
             tool_executor=self.tool_executor,
             agent_loop=self.agent_loop,
         )
+
+        # Interrupt handling state
+        self.interrupt_count = 0
 
         # Generate conversation ID
         self.conversation_id = conversation_id or datetime.now().strftime(
@@ -171,13 +177,32 @@ When you've completed the task, say "TASK_COMPLETE" followed by a summary of wha
 
 {get_tools_prompt()}
 
+# How to Explore Directories
+
+To explore the full codebase structure:
+- Use `list_files` with pattern `**/*.py` to list all Python files recursively
+- Use `list_files` with pattern `**/*` to see ALL files and directories
+- Use `run_bash` with `find . -type f` to list all files
+- Use `run_bash` with `tree` or `ls -R` to see directory structure
+
+Example - list all Python files:
+```tool_call
+{{
+  "tool": "list_files",
+  "parameters": {{
+    "pattern": "**/*.py"
+  }}
+}}
+```
+
 # Important Rules
 
 1. **ITERATE**: Call tools immediately when needed, then analyze results and continue iterating
 2. **MULTIPLE TOOLS**: You can call multiple tools per response
 3. **READ BEFORE EDIT**: Always read a file before editing it
-4. **SIGNAL COMPLETION**: Say "TASK_COMPLETE" when the task is done
-5. **USE TOOLS IMMEDIATELY**: Don't ask permission - just call the tool
+4. **EXPLORE THOROUGHLY**: Use `**/*` patterns to see all files in subdirectories
+5. **SIGNAL COMPLETION**: Say "TASK_COMPLETE" when the task is done
+6. **USE TOOLS IMMEDIATELY**: Don't ask permission - just call the tool
 
 # Examples
 
@@ -235,9 +260,8 @@ Assistant: I'll first read the file to understand its structure.
         if self.config.get("auto_save_conversations", True):
             metadata = {
                 "working_dir": str(self.tool_executor.working_dir),
-                "triton_url": self.client.url,
-                "model_name": self.client.model_name,
-                "use_openai": self.use_openai,
+                "provider": self.provider.provider_name,
+                "model_name": self.provider.model_name,
                 "saved_at": datetime.now().isoformat(),
             }
             self.config.save_conversation(
@@ -328,7 +352,7 @@ Assistant: I'll first read the file to understand its structure.
 
     def run_conversation_turn(self, user_message: str) -> None:
         """
-        Run one turn of the conversation using the agentic loop.
+        Run one turn of the conversation with optimized execution strategy.
 
         Args:
             user_message: User's message
@@ -337,63 +361,58 @@ Assistant: I'll first read the file to understand its structure.
         self.messages.append({"role": "user", "content": user_message})
 
         try:
-            # Step 1: Classify task complexity (if enabled)
-            complexity = "SIMPLE"
+            # Step 1: Classify task (if enabled)
+            classification = None
             if self.config.get("enable_task_classification", True):
-                complexity = self.classifier.classify(
+                classification = self.classifier.classify(
                     user_message, self.messages
                 )
 
-            # Step 2: If COMPLEX and planning enabled, ask about planning
-            if (
-                complexity == "COMPLEX"
-                and self.config.get("enable_planning_phase", True)
-            ):
-                response = Prompt.ask(
-                    "[bold yellow]This looks complex. Create a plan first?[/bold yellow]",
-                    choices=["yes", "no"],
-                    default="yes",
+                # Step 2: Get execution strategy based on classification
+                exec_config = ExecutionStrategy.get_execution_config(
+                    classification,
+                    self.provider.provider_name,
+                    self.provider.model_name,
                 )
 
-                if response == "yes":
-                    # Execute planning phase
-                    plan = self.planning_phase.execute_planning(
-                        user_message, self.messages
-                    )
-
-                    # Get user approval
-                    approval = self.planning_phase.get_user_approval(plan)
-
-                    if not approval.get("approved", False):
-                        console.print(
-                            "[yellow]Task cancelled by user[/yellow]"
-                        )
-                        return
-
-                    # If modifications requested, add them to conversation
-                    if "modifications" in approval:
-                        self.messages.append(
-                            {
-                                "role": "user",
-                                "content": f"Plan modifications: {approval['modifications']}",
-                            }
-                        )
-
-            # Step 3: Run the agentic loop
-            result = self.agent_loop.run(
-                messages=self.messages,
-                tool_parser=self.parse_tool_calls,
-                display_callback=None,  # We'll handle display in agent_loop
-            )
-
-            # Display result summary
-            if result["success"]:
                 console.print(
-                    f"\n[dim]Completed in {result['iterations']} iteration(s) "
-                    f"with {result['tool_calls']} tool call(s)[/dim]"
+                    f"[dim]→ Execution mode: {exec_config.mode} "
+                    f"(model: {exec_config.model_tier}, "
+                    f"max_iter: {exec_config.max_iterations})[/dim]"
                 )
+
+                # Step 3: Switch model if needed (and provider supports it)
+                current_model = self.provider.model_name
+                target_model = exec_config.hyperparameters.get("model")
+
+                if target_model and target_model != current_model:
+                    try:
+                        self.provider.set_model(target_model)
+                        console.print(
+                            f"[dim]→ Switched model: {current_model} → {target_model}[/dim]"
+                        )
+                    except Exception:
+                        # Provider doesn't support model switching, continue with current
+                        pass
+
             else:
-                console.print(f"\n[red]Error: {result.get('error')}[/red]")
+                # Classification disabled, use default complex config
+                exec_config = ExecutionStrategy.get_execution_config(
+                    None,  # Will trigger fallback
+                    self.provider.provider_name,
+                    self.provider.model_name,
+                )
+
+            # Step 4: Execute based on mode
+            if exec_config.mode == "conversational":
+                # Conversational mode: single-turn response, no tools
+                self._run_conversational_turn(exec_config)
+
+            else:
+                # Agentic modes: use agent loop
+                self._run_agentic_turn(
+                    classification, exec_config, user_message
+                )
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted[/yellow]")
@@ -402,6 +421,100 @@ Assistant: I'll first read the file to understand its structure.
 
             console.print(f"\n[red]Error: {e}[/red]")
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
+
+    def _run_conversational_turn(self, exec_config):
+        """
+        Handle conversational turn (no tools, single response).
+
+        Args:
+            exec_config: Execution configuration
+        """
+        console.print("[bold cyan]Assistant:[/bold cyan]")
+        chunks = []
+
+        # Pass hyperparameters to provider
+        stream_options = exec_config.hyperparameters.copy()
+
+        for chunk in self.provider.generate_streaming(
+            self.messages, stream_options=stream_options
+        ):
+            console.print(chunk, end="")
+            chunks.append(chunk)
+
+        console.print("\n")
+
+        # Add response to conversation
+        response_text = "".join(chunks)
+        self.messages.append({"role": "assistant", "content": response_text})
+
+    def _run_agentic_turn(self, classification, exec_config, user_message):
+        """
+        Handle agentic turn (with tools and iterations).
+
+        Args:
+            classification: Task classification
+            exec_config: Execution configuration
+            user_message: Original user message
+        """
+        # Check if planning phase should be offered
+        if (
+            exec_config.use_planning
+            and classification
+            and classification.complexity == "COMPLEX"
+            and self.config.get("enable_planning_phase", True)
+        ):
+            response = Prompt.ask(
+                "[bold yellow]This looks complex. Create a plan first?[/bold yellow]",
+                choices=["yes", "no"],
+                default="yes",
+            )
+
+            if response == "yes":
+                # Execute planning phase
+                plan = self.planning_phase.execute_planning(
+                    user_message, self.messages
+                )
+
+                # Get user approval
+                approval = self.planning_phase.get_user_approval(plan)
+
+                if not approval.get("approved", False):
+                    console.print("[yellow]Task cancelled by user[/yellow]")
+                    return
+
+                # If modifications requested, add them to conversation
+                if "modifications" in approval:
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": f"Plan modifications: {approval['modifications']}",
+                        }
+                    )
+
+        # Update agent loop max iterations for this turn
+        original_max_iterations = self.agent_loop.max_iterations
+        self.agent_loop.max_iterations = exec_config.max_iterations
+
+        # Run agent loop with hyperparameters
+        self.agent_loop.stream_options = exec_config.hyperparameters
+
+        result = self.agent_loop.run(
+            messages=self.messages,
+            tool_parser=self.parse_tool_calls,
+            display_callback=None,
+        )
+
+        # Restore original max iterations
+        self.agent_loop.max_iterations = original_max_iterations
+
+        # Display result summary
+        if result["success"]:
+            console.print(
+                f"\n[dim]Completed in {result['iterations']} iteration(s) "
+                f"with {result['tool_calls']} tool call(s)[/dim]"
+            )
+        else:
+            console.print(f"\n[red]Error: {result.get('error')}[/red]")
 
     def run(self):
         """Run the interactive CLI."""
@@ -424,18 +537,21 @@ Assistant: I'll first read the file to understand its structure.
                 "[dim]→ Config is saved to ~/.kubrick (mounted volume)[/dim]"
             )
 
-        # Check Triton server health
-        if not self.client.is_healthy():
+        # Check provider health
+        if not self.provider.is_healthy():
             console.print(
-                f"[red]Warning: Cannot connect to Triton server at {self.client.url}[/red]"
+                f"[red]Warning: Cannot connect to {self.provider.provider_name} provider[/red]"
             )
             console.print(
-                "[yellow]Make sure the Triton server is running.[/yellow]"
+                "[yellow]Please check your provider configuration and connectivity.[/yellow]"
             )
 
         while True:
             try:
                 user_input = Prompt.ask("\n[bold green]You[/bold green]")
+
+                # Reset interrupt count when user enters a message
+                self.interrupt_count = 0
 
                 if not user_input.strip():
                     continue
@@ -460,13 +576,35 @@ Assistant: I'll first read the file to understand its structure.
                 self._save_conversation()
 
             except KeyboardInterrupt:
-                # Save conversation before exiting
-                self._save_conversation()
-                console.print(
-                    f"\n[cyan]Conversation saved as {self.conversation_id}[/cyan]"
-                )
-                console.print("[cyan]Goodbye![/cyan]")
-                break
+                self.interrupt_count += 1
+
+                if self.interrupt_count == 1:
+                    # First Ctrl+C: Clear prompt
+                    console.print("\n[yellow]^C (Press again to start new conversation, once more to exit)[/yellow]")
+                    continue
+
+                elif self.interrupt_count == 2:
+                    # Second Ctrl+C: Start new conversation
+                    console.print("\n[yellow]Starting new conversation...[/yellow]")
+                    self._save_conversation()
+
+                    # Reset conversation
+                    self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    self.messages = self._get_initial_messages()
+
+                    console.print(f"[cyan]New conversation ID: {self.conversation_id}[/cyan]")
+                    console.print("[dim]Press Ctrl+C once more to exit[/dim]")
+                    continue
+
+                else:
+                    # Third Ctrl+C: Exit
+                    self._save_conversation()
+                    console.print(
+                        f"\n[cyan]Conversation saved as {self.conversation_id}[/cyan]"
+                    )
+                    console.print("[cyan]Goodbye![/cyan]")
+                    break
+
             except Exception as e:
                 console.print(f"[red]Error: {e}[/red]")
 
@@ -561,9 +699,8 @@ Assistant: I'll first read the file to understand its structure.
             table.add_row("Conversation ID", self.conversation_id)
             table.add_row("Messages Count", str(len(self.messages)))
             table.add_row("Working Dir", str(self.tool_executor.working_dir))
-            table.add_row("Triton URL", self.client.url)
-            table.add_row("Model Name", self.client.model_name)
-            table.add_row("Use OpenAI", str(self.use_openai))
+            table.add_row("Provider", self.provider.provider_name)
+            table.add_row("Model Name", self.provider.model_name)
 
             console.print(table)
 
@@ -603,11 +740,11 @@ Assistant: I'll first read the file to understand its structure.
 
 def main():
     """Main entry point."""
-    # Initialize config (creates ~/.kubrick if needed)
+    # Initialize config (creates ~/.kubrick if needed, runs setup wizard on first run)
     config = KubrickConfig()
 
     parser = argparse.ArgumentParser(
-        description="Kubrick - AI-assisted coding CLI with conversation persistence",
+        description="Kubrick - AI-assisted coding CLI with agentic capabilities",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Special Commands:
@@ -618,36 +755,17 @@ Special Commands:
   /delete ID         Delete a conversation
 
 Examples:
-  kubrick                           # Start new conversation with defaults
+  kubrick                           # Start new conversation with configured provider
   kubrick --load 20240118_143022    # Load a previous conversation
-  kubrick --triton-url myserver:8000 # Use custom Triton server
-  kubrick --use-openai              # Use OpenAI instead of local LLM
+  kubrick --working-dir /path/to/project  # Set working directory
+  kubrick --provider openai         # Override provider for this session
         """,
-    )
-
-    parser.add_argument(
-        "--triton-url",
-        default=os.environ.get("TRITON_URL", None),
-        help=f"Triton server HTTP URL (default from config: {config.get('triton_url')})",
-    )
-
-    parser.add_argument(
-        "--model-name",
-        default=os.environ.get("TRITON_MODEL_NAME", None),
-        help=f"Triton model name (default from config: {config.get('model_name')})",
     )
 
     parser.add_argument(
         "--working-dir",
         default=None,
         help="Working directory for file operations (default: current directory)",
-    )
-
-    parser.add_argument(
-        "--use-openai",
-        action="store_true",
-        default=None,
-        help="Route requests to OpenAI API instead of local vLLM",
     )
 
     parser.add_argument(
@@ -658,19 +776,29 @@ Examples:
         help="Load a previous conversation by ID",
     )
 
+    parser.add_argument(
+        "--provider",
+        default=None,
+        choices=["triton", "openai", "anthropic"],
+        help="Override configured provider for this session",
+    )
+
     args = parser.parse_args()
 
     # Create and run CLI
-    cli = KubrickCLI(
-        config=config,
-        triton_url=args.triton_url,
-        model_name=args.model_name,
-        working_dir=args.working_dir,
-        use_openai=args.use_openai if args.use_openai else None,
-        conversation_id=args.conversation_id,
-    )
+    try:
+        cli = KubrickCLI(
+            config=config,
+            working_dir=args.working_dir,
+            conversation_id=args.conversation_id,
+            provider_override=args.provider,
+        )
 
-    cli.run()
+        cli.run()
+    except Exception as e:
+        console.print(f"[red]Failed to start Kubrick: {e}[/red]")
+        import sys
+        sys.exit(1)
 
 
 if __name__ == "__main__":

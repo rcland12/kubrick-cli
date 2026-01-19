@@ -13,30 +13,17 @@ def test_http_client():
 
     # Initialize client
     print("1. Initializing HTTP client...")
-    try:
-        client = TritonLLMClient(
-            url="localhost:8000",
-            model_name="llm_decoupled",
-        )
-        print("   ✓ Client initialized")
-    except Exception as e:
-        print(f"   ✗ Failed to initialize: {e}")
-        return False
+    client = TritonLLMClient(
+        url="localhost:8000",
+        model_name="llm_decoupled",
+    )
+    print("   ✓ Client initialized")
 
     # Test health check
     print("\n2. Checking server health...")
-    try:
-        is_healthy = client.is_healthy()
-        if is_healthy:
-            print("   ✓ Server is healthy")
-        else:
-            print("   ✗ Server is not responding")
-            return False
-    except Exception as e:
-        print(f"   ✗ Health check failed: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return False
+    is_healthy = client.is_healthy()
+    assert is_healthy, "Server is not responding"
+    print("   ✓ Server is healthy")
 
     # Test streaming inference
     print("\n3. Testing streaming inference...")
@@ -47,26 +34,15 @@ def test_http_client():
         {"role": "user", "content": "Say hello in one word."}
     ]
 
-    try:
-        full_response = ""
-        for chunk in client.generate_streaming(messages):
-            print(chunk, end="", flush=True)
-            full_response += chunk
+    full_response = ""
+    for chunk in client.generate_streaming(messages):
+        print(chunk, end="", flush=True)
+        full_response += chunk
 
-        print("\n")
+    print("\n")
 
-        if full_response:
-            print(f"   ✓ Got response: {repr(full_response[:50])}")
-            return True
-        else:
-            print("   ✗ Empty response")
-            return False
-
-    except Exception as e:
-        print(f"\n   ✗ Streaming failed: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return False
+    assert full_response, "Empty response received"
+    print(f"   ✓ Got response: {repr(full_response[:50])}")
 
 
 def main():

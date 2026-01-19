@@ -1,4 +1,14 @@
-FROM python:3.11-slim
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+SHELL ["/bin/sh", "-euxc"]
+
+COPY . .
+RUN pip install --no-cache-dir --upgrade pip build && \
+    python -m build --wheel
+
+
+FROM python:3.11-slim AS runtime
 
 ARG UID=1000
 ARG GID=1000
@@ -8,29 +18,25 @@ LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="kubrick-cli"
 LABEL org.opencontainers.image.description="Kubrick CLI tool"
 
-WORKDIR /app
+SHELL ["/bin/sh", "-euxc"]
 
-COPY pyproject.toml ./
-COPY kubrick_cli/ ./kubrick_cli/
-
-RUN pip install --no-cache-dir -e . && \
-    rm -rf /root/.cache
-
-RUN groupadd -g ${GID} kubrick && \
-    useradd -m -u ${UID} -g ${GID} -s /bin/bash kubrick
-
-RUN mkdir -p /kubrick /workspace && \
-    chown -R kubrick:kubrick /kubrick /workspace && \
-    ln -s /kubrick /home/kubrick/.kubrick
-
-USER kubrick
-
-WORKDIR /workspace
-
-ENV KUBRICK_IN_DOCKER=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV KUBRICK_IN_DOCKER=0
+ENV USER=kubrick
+ENV HOME=/home/${USER}
 
+RUN groupadd -g ${GID} ${USER} && \
+    useradd -m -u ${UID} -g ${GID} -s /bin/sh ${USER} && \
+    mkdir -p /workspace && \
+    chown -R ${USER}:${USER} ${HOME} /workspace
+
+WORKDIR /workspace
+COPY --from=builder /app/dist/ /tmp/dist/
+RUN pip install --no-cache-dir /tmp/dist/*.whl && \
+    rm -rf /tmp/dist
+
+USER ${USER}
 ENTRYPOINT ["kubrick"]
-
 CMD []

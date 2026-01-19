@@ -9,52 +9,96 @@ from typing import Any, Dict, Optional
 class KubrickConfig:
     """Manages Kubrick configuration and data directories."""
 
-    def __init__(self):
-        """Initialize config manager and ensure directories exist."""
-        self.kubrick_dir = Path.home() / ".kubrick"
+    def __init__(self, skip_wizard: bool = False):
+        """
+        Initialize config manager and ensure directories exist.
+
+        Args:
+            skip_wizard: Skip setup wizard even if config doesn't exist (for testing)
+        """
+        # Check if running in Docker
+        import os
+        if os.environ.get("KUBRICK_IN_DOCKER"):
+            # Docker mode: use /kubrick (mounted volume)
+            self.kubrick_dir = Path("/kubrick")
+        else:
+            # Normal mode: use ~/.kubrick
+            self.kubrick_dir = Path.home() / ".kubrick"
+
         self.config_file = self.kubrick_dir / "config.json"
         self.conversations_dir = self.kubrick_dir / "conversations"
 
         # Ensure directories exist
         self._ensure_directories()
 
-        # Load or create config
-        self.config = self._load_config()
+        # Load or create config (with optional setup wizard)
+        self.config = self._load_config(skip_wizard=skip_wizard)
 
     def _ensure_directories(self):
         """Create necessary directories if they don't exist."""
         self.kubrick_dir.mkdir(exist_ok=True)
         self.conversations_dir.mkdir(exist_ok=True)
 
-    def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from file or create default."""
+    def _load_config(self, skip_wizard: bool = False) -> Dict[str, Any]:
+        """
+        Load configuration from file or create default.
+
+        Args:
+            skip_wizard: Skip setup wizard even if config doesn't exist
+
+        Returns:
+            Configuration dictionary
+        """
         if self.config_file.exists():
             try:
                 with open(self.config_file, "r") as f:
-                    return json.load(f)
+                    loaded_config = json.load(f)
+
+                # Merge with defaults to ensure all keys exist
+                default_config = self._get_default_config()
+                default_config.update(loaded_config)
+                return default_config
+
             except (json.JSONDecodeError, IOError):
                 # If config is corrupted, start fresh
                 return self._get_default_config()
         else:
-            # Create default config
-            config = self._get_default_config()
-            self._save_config(config)
-            return config
+            # First time setup - run wizard unless skipped
+            if not skip_wizard:
+                from .setup_wizard import SetupWizard
+
+                wizard_config = SetupWizard.run()
+
+                # Merge wizard config with defaults
+                config = self._get_default_config()
+                config.update(wizard_config)
+
+                self._save_config(config)
+                return config
+            else:
+                # Create default config without wizard
+                config = self._get_default_config()
+                self._save_config(config)
+                return config
 
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration values."""
         return {
-            # Server settings
+            # Provider settings
+            "provider": "triton",
+            # Triton settings
             "triton_url": "localhost:8000",
+            "triton_model": "llm_decoupled",
+            # OpenAI settings
+            "openai_api_key": None,
+            "openai_model": "gpt-4",
+            # Anthropic settings
+            "anthropic_api_key": None,
+            "anthropic_model": "claude-3-5-sonnet-20240620",
+            # Legacy compatibility
             "model_name": "llm_decoupled",
             "use_openai": False,
             "default_working_dir": None,
-            # Provider settings (for future multi-provider support)
-            "provider": "triton",
-            "openai_api_key": None,
-            "openai_model": "gpt-4",
-            "anthropic_api_key": None,
-            "anthropic_model": "claude-3-5-sonnet-20241022",
             # Agent loop settings
             "max_iterations": 15,
             "max_tools_per_turn": 5,
