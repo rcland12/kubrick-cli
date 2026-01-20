@@ -1,6 +1,42 @@
 # Kubrick CLI Changelog
 
-## Version 0.1.3 (Unreleased)
+## Version 0.1.4 (Unreleased)
+
+### Enhancements
+
+#### 1. GitHub Container Registry Support
+
+- **Dual Docker Registry Publishing**: Docker images now published to both Docker Hub and GitHub Container Registry
+- **GitHub Packages Integration**: Images available at `ghcr.io/rcland12/kubrick-cli`
+- **Registry Options**:
+  - Docker Hub: `docker pull rcland12/kubrick-cli:latest`
+  - GitHub Packages: `docker pull ghcr.io/rcland12/kubrick-cli:latest`
+
+**Benefits:**
+
+- Better integration with GitHub ecosystem
+- Version tracking linked to GitHub releases
+- Package visibility on GitHub profile
+- Redundancy if one registry has issues
+- Free unlimited storage and bandwidth for public repos
+
+**Documentation Updated:**
+
+- README.md now shows both registry options
+- docs/WIKI.md updated with dual registry support
+- docs/DOCKER.md added registry comparison section
+- CD workflow automatically publishes to both registries
+
+#### 2. Code Quality Improvements
+
+- **Fixed unused variables**: Removed unused `result` variable in `kubrick_cli/planning.py`
+- **Fixed display preview**: Tool result previews now properly displayed (was creating preview but not showing it)
+- **Fixed flake8 issues**: Resolved f-string and unused variable warnings in tests
+- **Added security annotation**: Added `# nosec` comment for validated shell=True usage in tools.py
+
+---
+
+## Version 0.1.3
 
 ### Enhancements
 

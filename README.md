@@ -13,8 +13,12 @@ kubrick
 
 ### Docker
 
+Available from Docker Hub or GitHub Container Registry:
+
 ```bash
 cd /path/to/your/project
+
+# From Docker Hub
 docker run --rm -it \
   --network host \
   -v ${HOME}:/home/kubrick \
@@ -22,6 +26,15 @@ docker run --rm -it \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
   rcland12/kubrick-cli
+
+# From GitHub Container Registry
+docker run --rm -it \
+  --network host \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
+  ghcr.io/rcland12/kubrick-cli
 ```
 
 ## Quick Start

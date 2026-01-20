@@ -6,7 +6,8 @@ on:
       - master
 
 env:
-  REGISTRY_IMAGE: rcland12/kubrick-cli
+  DOCKERHUB_IMAGE: rcland12/kubrick-cli
+  GHCR_IMAGE: ghcr.io/rcland12/kubrick-cli
 
 jobs:
   check-version:
@@ -84,10 +85,13 @@ jobs:
           password: ${{ secrets.PYPI_API_TOKEN }}
 
   publish-docker:
-    name: Build and Push Docker Image
+    name: Build and Push Docker Images
     runs-on: ubuntu-latest
     needs: [check-version, test]
     if: needs.check-version.outputs.version_changed == 'true'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -100,17 +104,25 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY_IMAGE }}
+          images: |
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
           tags: |
             type=semver,pattern={{version}},value=v${{ needs.check-version.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=v${{ needs.check-version.outputs.version }}
             type=semver,pattern={{major}},value=v${{ needs.check-version.outputs.version }}
             type=raw,value=latest
-      - name: Build and push Docker image
+      - name: Build and push Docker images
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -121,8 +133,8 @@ jobs:
           build-args: |
             UID=1000
             GID=1000
-          cache-from: type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.DOCKERHUB_IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKERHUB_IMAGE }}:buildcache,mode=max
 
   create-tag-and-release:
     name: Create Git Tag and GitHub Release
@@ -171,7 +183,11 @@ jobs:
           echo "## Docker" >> CHANGELOG.md
           echo "" >> CHANGELOG.md
           echo '```bash' >> CHANGELOG.md
+          echo "# Docker Hub" >> CHANGELOG.md
           echo "docker pull rcland12/kubrick-cli:$VERSION" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "# GitHub Container Registry" >> CHANGELOG.md
+          echo "docker pull ghcr.io/rcland12/kubrick-cli:$VERSION" >> CHANGELOG.md
           echo '```' >> CHANGELOG.md
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -200,5 +216,6 @@ jobs:
           VERSION=${{ needs.check-version.outputs.version }}
           echo "✅ Successfully released v$VERSION"
           echo "📦 PyPI: https://pypi.org/project/kubrick-cli/$VERSION/"
-          echo "🐳 Docker: https://hub.docker.com/r/rcland12/kubrick-cli"
-          echo "🎉 GitHub: https://github.com/${{ github.repository }}/releases/tag/v$VERSION"
+          echo "🐳 Docker Hub: https://hub.docker.com/r/rcland12/kubrick-cli"
+          echo "📦 GitHub Packages: https://github.com/${{ github.repository }}/pkgs/container/kubrick-cli"
+          echo "🎉 GitHub Release: https://github.com/${{ github.repository }}/releases/tag/v$VERSION"
