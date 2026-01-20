@@ -47,11 +47,11 @@ kubrick --load 20240118_143022
 
 ## Documentation
 
-- **[WIKI.md](https://github.com/rcland12/kubrick-cli/blob/main/docs/WIKI.md)** - Complete features, commands, and usage guide
-- **[PROVIDERS.md](https://github.com/rcland12/kubrick-cli/blob/main/docs/PROVIDERS.md)** - Multi-provider setup (Triton, OpenAI, Anthropic)
-- **[TRITON.md](https://github.com/rcland12/kubrick-cli/blob/main/docs/TRITON.md)** - Triton backend setup and requirements
-- **[TESTING.md](https://github.com/rcland12/kubrick-cli/blob/main/docs/TESTING.md)** - Testing guide and CI/CD setup
-- **[DOCKER.md](https://github.com/rcland12/kubrick-cli/blob/main/docs/DOCKER.md)** - Docker setup and troubleshooting
+- **[WIKI.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/WIKI.md)** - Complete features, commands, and usage guide
+- **[PROVIDERS.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/PROVIDERS.md)** - Multi-provider setup (Triton, OpenAI, Anthropic)
+- **[TRITON.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/TRITON.md)** - Triton backend setup and requirements
+- **[TESTING.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/TESTING.md)** - Testing guide and CI/CD setup
+- **[DOCKER.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/DOCKER.md)** - Docker setup and troubleshooting
 
 ## Configuration
 
@@ -83,7 +83,7 @@ pytest --cov=kubrick_cli --cov-report=term-missing
 pytest tests/test_tool_executor.py -v
 ```
 
-See [TESTING.md](https://github.com/rcland12/kubrick-cli/blob/main/docs/TESTING.md) for detailed testing documentation.
+See [TESTING.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/TESTING.md) for detailed testing documentation.
 
 ### Code Quality
 
