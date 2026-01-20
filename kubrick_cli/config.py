@@ -89,7 +89,7 @@ class KubrickConfig:
             "openai_model": "gpt-4",
             # Anthropic settings
             "anthropic_api_key": None,
-            "anthropic_model": "claude-3-5-sonnet-20240620",
+            "anthropic_model": "claude-sonnet-4-5-20250929",
             # Legacy compatibility
             "model_name": "llm_decoupled",
             "use_openai": False,
@@ -244,7 +244,5 @@ class KubrickConfig:
             conversations.sort(key=lambda x: x.stat().st_mtime)
 
             # Delete oldest conversations
-            for conv_file in conversations[
-                : len(conversations) - max_conversations
-            ]:
+            for conv_file in conversations[: len(conversations) - max_conversations]:
                 conv_file.unlink()
