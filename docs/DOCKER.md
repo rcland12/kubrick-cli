@@ -2,6 +2,15 @@
 
 Guide to running Kubrick CLI in a Docker container.
 
+## Container Registries
+
+Kubrick CLI Docker images are available from two registries:
+
+- **Docker Hub**: `rcland12/kubrick-cli`
+- **GitHub Container Registry**: `ghcr.io/rcland12/kubrick-cli`
+
+Both registries have identical images. Choose whichever you prefer!
+
 ## Quick Start
 
 ### With standard Docker:
@@ -10,7 +19,7 @@ Guide to running Kubrick CLI in a Docker container.
 # Navigate to your project directory
 cd /path/to/your/project
 
-# Run kubrick
+# Run kubrick (from Docker Hub)
 docker run --rm -it \
   --network host \
   -v ${HOME}:/home/kubrick \
@@ -18,6 +27,15 @@ docker run --rm -it \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
   rcland12/kubrick-cli
+
+# Or from GitHub Container Registry
+docker run --rm -it \
+  --network host \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
+  ghcr.io/rcland12/kubrick-cli
 ```
 
 ### With Docker Compose:

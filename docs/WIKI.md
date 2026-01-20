@@ -50,15 +50,24 @@ This installs the `kubrick` command globally.
 
 ### Option 2: Docker
 
-Run in a container without installing anything:
+Run in a container without installing anything. Available from Docker Hub or GitHub Container Registry:
 
 ```bash
 cd /path/to/your/project
+
+# From Docker Hub
 docker run --rm -it \
   --network host \
   -v ~/.kubrick:/kubrick \
   -v $(pwd):/workspace \
   rcland12/kubrick-cli:latest
+
+# From GitHub Container Registry
+docker run --rm -it \
+  --network host \
+  -v ~/.kubrick:/kubrick \
+  -v $(pwd):/workspace \
+  ghcr.io/rcland12/kubrick-cli:latest
 ```
 
 See [DOCKER.md](DOCKER.md) for complete Docker setup.
