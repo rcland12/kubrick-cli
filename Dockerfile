@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /app
 SHELL ["/bin/sh", "-euxc"]
@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir --upgrade pip build && \
     python -m build --wheel
 
 
-FROM python:3.11-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 ARG UID=1000
 ARG GID=1000
