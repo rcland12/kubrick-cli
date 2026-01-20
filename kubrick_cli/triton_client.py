@@ -24,7 +24,6 @@ class TritonLLMClient:
         """
         self.model_name = model_name
 
-        # Parse URL
         if not url.startswith("http://") and not url.startswith("https://"):
             url = f"http://{url}"
 
@@ -62,13 +61,11 @@ class TritonLLMClient:
         Yields:
             Text chunks as they arrive
         """
-        # Build request payload
         if stream_options is None:
             stream_options = {"streaming": True}
         else:
             stream_options = {"streaming": True, **stream_options}
 
-        # Build the request payload using the custom generate_stream format
         payload = {
             "text_input": json.dumps(messages),
             "parameters": stream_options,
@@ -90,70 +87,58 @@ class TritonLLMClient:
 
             if response.status not in (200, 201):
                 error_body = response.read().decode("utf-8")
-                raise Exception(
-                    f"Server returned {response.status}: {error_body}"
-                )
+                raise Exception(f"Server returned {response.status}: {error_body}")
 
-            # Read streaming response
-            buffer = ""
+            byte_buffer = b""
             while True:
                 chunk = response.read(1024)
                 if not chunk:
                     break
 
-                if isinstance(chunk, bytes):
-                    chunk = chunk.decode("utf-8")
+                byte_buffer += chunk
 
-                buffer += chunk
+                while b"\n" in byte_buffer:
+                    line_bytes, byte_buffer = byte_buffer.split(b"\n", 1)
 
-                # Process complete lines
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
+                    try:
+                        line = line_bytes.decode("utf-8").strip()
+                    except UnicodeDecodeError:
+                        continue
 
                     if not line:
                         continue
 
-                    # Remove SSE "data: " prefix if present
                     if line.startswith("data: "):
                         line = line[6:]
 
-                    # Check for end signal
                     if line == "[DONE]":
                         return
 
                     try:
                         data = json.loads(line)
 
-                        # Handle both text_output and outputs formats
                         output_data = None
                         if "text_output" in data:
                             output_data = data["text_output"]
                         elif "outputs" in data and len(data["outputs"]) > 0:
-                            output_data = data["outputs"][0].get("data", [""])[
-                                0
-                            ]
+                            output_data = data["outputs"][0].get("data", [""])[0]
 
                         if output_data:
-                            # Parse the actual response
                             try:
                                 chunk_data = json.loads(output_data)
 
                                 if chunk_data.get("type") == "chunk":
                                     yield chunk_data.get("content", "")
                                 elif chunk_data.get("type") == "complete":
-                                    # Stream is complete
                                     return
                                 elif chunk_data.get("type") == "error":
                                     raise Exception(
                                         f"LLM error: {chunk_data.get('content')}"
                                     )
                             except (json.JSONDecodeError, TypeError):
-                                # If not JSON, treat as plain text chunk
                                 yield output_data
 
                     except json.JSONDecodeError:
-                        # If line is not JSON, skip it
                         continue
 
         finally:

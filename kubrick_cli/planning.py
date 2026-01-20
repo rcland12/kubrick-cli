@@ -59,9 +59,7 @@ class PlanningPhase:
         self.tool_executor = tool_executor
         self.agent_loop = agent_loop
 
-    def execute_planning(
-        self, user_message: str, base_messages: List[Dict]
-    ) -> str:
+    def execute_planning(self, user_message: str, base_messages: List[Dict]) -> str:
         """
         Execute the planning phase.
 
@@ -72,17 +70,13 @@ class PlanningPhase:
         Returns:
             The generated plan text
         """
-        console.print(
-            "\n[bold yellow]→ Entering PLANNING MODE[/bold yellow]"
-        )
+        console.print("\n[bold yellow]→ Entering PLANNING MODE[/bold yellow]")
         console.print(
             "[dim]Agent will explore the codebase with read-only tools and create a plan.[/dim]\n"
         )
 
-        # Create planning messages with restricted system prompt
         planning_messages = base_messages.copy()
 
-        # Add planning-specific system message
         planning_messages.append(
             {
                 "role": "system",
@@ -177,15 +171,16 @@ Say "PLAN_COMPLETE" when your plan is ready.""",
             }
         )
 
-        # Add user's original request
         planning_messages.append(
             {
                 "role": "user",
-                "content": f"Task: {user_message}\n\nPlease explore the codebase and create an implementation plan.",
+                "content": (
+                    f"Task: {user_message}\n\n"
+                    "Please explore the codebase and create an implementation plan."
+                ),
             }
         )
 
-        # Run agent loop with read-only tool executor
         original_executor = self.agent_loop.tool_executor
         restricted_executor = RestrictedToolExecutor(
             self.tool_executor, PLANNING_ALLOWED_TOOLS
@@ -193,17 +188,15 @@ Say "PLAN_COMPLETE" when your plan is ready.""",
         self.agent_loop.tool_executor = restricted_executor
 
         try:
-            # Run planning loop (max 10 iterations)
             old_max = self.agent_loop.max_iterations
             self.agent_loop.max_iterations = 10
 
-            # Create tool parser
             from .main import KubrickCLI
 
             temp_cli = KubrickCLI.__new__(KubrickCLI)
             tool_parser = temp_cli.parse_tool_calls
 
-            result = self.agent_loop.run(
+            self.agent_loop.run(
                 messages=planning_messages,
                 tool_parser=tool_parser,
                 display_callback=None,
@@ -211,7 +204,6 @@ Say "PLAN_COMPLETE" when your plan is ready.""",
 
             self.agent_loop.max_iterations = old_max
 
-            # Extract the plan from the last assistant message
             plan_text = ""
             for msg in reversed(planning_messages):
                 if msg["role"] == "assistant":
@@ -221,7 +213,6 @@ Say "PLAN_COMPLETE" when your plan is ready.""",
             return plan_text
 
         finally:
-            # Restore original executor
             self.agent_loop.tool_executor = original_executor
 
     def get_user_approval(self, plan: str) -> Dict:
@@ -234,7 +225,6 @@ Say "PLAN_COMPLETE" when your plan is ready.""",
         Returns:
             Dict with 'approved' (bool) and optional 'modifications' (str)
         """
-        # Display plan
         console.print("\n" + "=" * 70)
         console.print(
             Panel(
@@ -245,7 +235,6 @@ Say "PLAN_COMPLETE" when your plan is ready.""",
         )
         console.print("=" * 70 + "\n")
 
-        # Get user decision
         choice = Prompt.ask(
             "[bold yellow]Approve this plan?[/bold yellow]",
             choices=["approve", "modify", "reject"],
@@ -253,7 +242,9 @@ Say "PLAN_COMPLETE" when your plan is ready.""",
         )
 
         if choice == "approve":
-            console.print("[green]✓ Plan approved, proceeding with implementation[/green]")
+            console.print(
+                "[green]✓ Plan approved, proceeding with implementation[/green]"
+            )
             return {"approved": True}
 
         elif choice == "modify":
@@ -263,7 +254,7 @@ Say "PLAN_COMPLETE" when your plan is ready.""",
             console.print("[yellow]Plan modifications noted, will adjust[/yellow]")
             return {"approved": True, "modifications": modifications}
 
-        else:  # reject
+        else:
             console.print("[red]Plan rejected, cancelling task[/red]")
             return {"approved": False}
 
@@ -295,23 +286,23 @@ class RestrictedToolExecutor:
         Returns:
             Result dict
         """
-        # Check if tool is allowed
         if tool_name not in self.allowed_tools:
             return {
                 "success": False,
                 "error": f"Tool '{tool_name}' is not allowed in planning mode (read-only)",
             }
 
-        # Special handling for run_bash - check for dangerous commands
         if tool_name == "run_bash":
             command = parameters.get("command", "")
             if self._is_dangerous_command(command):
                 return {
                     "success": False,
-                    "error": f"Bash command '{command}' is not allowed in planning mode (read-only)",
+                    "error": (
+                        f"Bash command '{command}' is not allowed in "
+                        "planning mode (read-only)"
+                    ),
                 }
 
-        # Execute allowed tool
         return self.base_executor.execute(tool_name, parameters)
 
     def _is_dangerous_command(self, command: str) -> bool:

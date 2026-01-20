@@ -7,6 +7,7 @@ Complete guide to using Kubrick CLI for AI-assisted coding.
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Provider Support](#provider-support)
 - [Configuration](#configuration)
 - [Available Tools](#available-tools)
 - [Special Commands](#special-commands)
@@ -18,17 +19,19 @@ Complete guide to using Kubrick CLI for AI-assisted coding.
 ## Features
 
 - 🤖 **AI-powered coding assistant** with natural conversation
+- 🔌 **Multi-provider support** - Use Triton, OpenAI, or Anthropic
 - 🛠️ **Robust tool calling** for automatic file operations and commands
 - 📁 **File operations**: read, write, edit with pattern matching
 - 🔍 **Code search** with glob patterns and grep-like functionality
 - 💻 **Bash command integration** for running scripts and commands
-- 🌊 **Real-time streaming responses** via HTTP (no external LLM libraries)
+- 🌊 **Real-time streaming responses** via HTTP (no external LLM libraries for Triton)
 - 💾 **Automatic conversation persistence** with searchable history
 - ⚙️ **Configuration management** with multiple override levels
 - 📂 **Conversation history** saved in `~/.kubrick`
 - 🔧 **Improved system prompts** with clear tool calling examples
 - 🛡️ **Fallback parser** for resilient tool call detection
 - 🐳 **Docker support** with working directory mounting
+- ✅ **Comprehensive test suite** with 100+ unit tests
 
 ## Installation
 
@@ -65,14 +68,17 @@ See [DOCKER.md](DOCKER.md) for complete Docker setup.
 ### Basic Commands
 
 ```bash
-# Start in current directory
+# Start in current directory (uses default provider from config)
 kubrick
 
-# Custom Triton server
-kubrick --triton-url my-server:8000
+# Use Triton provider (default)
+kubrick --triton-url my-server:8000 --triton-model llm_decoupled
 
-# Custom model name
-kubrick --model-name my-llm-model
+# Use OpenAI provider
+kubrick --provider openai --openai-model gpt-4
+
+# Use Anthropic provider
+kubrick --provider anthropic --anthropic-model claude-sonnet-4-5-20250929
 
 # Set working directory
 kubrick --working-dir /path/to/project
@@ -81,16 +87,72 @@ kubrick --working-dir /path/to/project
 kubrick --load 20240118_143022
 ```
 
+See [PROVIDERS.md](PROVIDERS.md) for detailed multi-provider setup and configuration.
+
 ### Command-Line Options
 
-| Option | Environment Variable | Description |
-|--------|---------------------|-------------|
-| `--triton-url` | `TRITON_URL` | Triton server HTTP URL |
-| `--model-name` | `TRITON_MODEL_NAME` | Triton model name |
-| `--working-dir` | - | Working directory for file operations |
-| `--load` | - | Load previous conversation by ID |
+#### Provider Selection
+
+| Option       | Environment Variable | Description                                      |
+| ------------ | -------------------- | ------------------------------------------------ |
+| `--provider` | -                    | LLM provider: `triton`, `openai`, or `anthropic` |
+
+#### Triton Provider Options
+
+| Option           | Environment Variable | Description                                      |
+| ---------------- | -------------------- | ------------------------------------------------ |
+| `--triton-url`   | `TRITON_URL`         | Triton server HTTP URL (default: localhost:8000) |
+| `--triton-model` | `TRITON_MODEL`       | Triton model name (default: llm_decoupled)       |
+
+#### OpenAI Provider Options
+
+| Option             | Environment Variable | Description                   |
+| ------------------ | -------------------- | ----------------------------- |
+| `--openai-api-key` | `OPENAI_API_KEY`     | OpenAI API key (required)     |
+| `--openai-model`   | `OPENAI_MODEL`       | OpenAI model (default: gpt-4) |
+
+#### Anthropic Provider Options
+
+| Option                | Environment Variable | Description                                           |
+| --------------------- | -------------------- | ----------------------------------------------------- |
+| `--anthropic-api-key` | `ANTHROPIC_API_KEY`  | Anthropic API key (required)                          |
+| `--anthropic-model`   | `ANTHROPIC_MODEL`    | Anthropic model (default: claude-sonnet-4-5-20250929) |
+
+#### General Options
+
+| Option          | Environment Variable | Description                                   |
+| --------------- | -------------------- | --------------------------------------------- |
+| `--working-dir` | -                    | Working directory for file operations         |
+| `--load`        | -                    | Load previous conversation by ID or file path |
 
 **Priority order:** CLI arguments > Environment variables > Config file > Defaults
+
+## Provider Support
+
+Kubrick supports multiple LLM providers, allowing you to use:
+
+### Triton Inference Server (Default)
+
+- **Self-hosted**: Run your own LLM models
+- **No API costs**: Complete control and privacy
+- **Streaming support**: Real-time responses via HTTP
+- **Setup**: See [TRITON.md](TRITON.md) for Triton configuration
+
+### OpenAI
+
+- **Easy setup**: Just add your API key
+- **Models**: GPT-4, GPT-3.5-turbo, and more
+- **Quick start**: `kubrick --provider openai --openai-model gpt-4`
+
+### Anthropic (Claude)
+
+- **Claude models**: Claude Sonnet, Opus, etc.
+- **High quality**: State-of-the-art language understanding
+- **Quick start**: `kubrick --provider anthropic --anthropic-model claude-sonnet-4-5-20250929`
+
+### Custom Providers
+
+Want to add support for another LLM? See [PROVIDERS.md](PROVIDERS.md) for a guide on creating custom provider adapters. The system is designed to be plug-and-play - just drop a new provider file in and it's automatically discovered!
 
 ## Configuration
 
@@ -100,11 +162,18 @@ Configuration is stored at `~/.kubrick/config.json`:
 
 ```json
 {
+  "provider": "triton",
   "triton_url": "localhost:8000",
-  "model_name": "llm_decoupled",
+  "triton_model": "llm_decoupled",
+  "openai_api_key": null,
+  "openai_model": "gpt-4",
+  "anthropic_api_key": null,
+  "anthropic_model": "claude-sonnet-4-5-20250929",
   "default_working_dir": null,
   "auto_save_conversations": true,
-  "max_conversations": 100
+  "max_conversations": 100,
+  "max_iterations": 15,
+  "max_tools_per_turn": 5
 }
 ```
 
@@ -113,9 +182,19 @@ Configuration is stored at `~/.kubrick/config.json`:
 Override config with environment variables:
 
 ```bash
+# Triton provider
 export TRITON_URL=my-server:8000
-export TRITON_MODEL_NAME=llm_decoupled
-kubrick
+export TRITON_MODEL=llm_decoupled
+
+# OpenAI provider
+export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-4
+
+# Anthropic provider
+export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
+
+kubrick --provider openai
 ```
 
 ### In-Session Configuration
@@ -134,57 +213,96 @@ The AI assistant can automatically use these tools:
 ### File Operations
 
 - **read_file** - Read file contents
+
   ```json
-  {"tool": "read_file", "parameters": {"file_path": "main.py"}}
+  { "tool": "read_file", "parameters": { "file_path": "main.py" } }
   ```
 
 - **write_file** - Create or overwrite files
+
   ```json
-  {"tool": "write_file", "parameters": {"file_path": "test.py", "content": "..."}}
+  {
+    "tool": "write_file",
+    "parameters": { "file_path": "test.py", "content": "..." }
+  }
   ```
 
 - **edit_file** - Replace text in files
+
   ```json
-  {"tool": "edit_file", "parameters": {"file_path": "main.py", "old_text": "...", "new_text": "..."}}
+  {
+    "tool": "edit_file",
+    "parameters": {
+      "file_path": "main.py",
+      "old_text": "...",
+      "new_text": "..."
+    }
+  }
   ```
 
 - **create_directory** - Create directories
   ```json
-  {"tool": "create_directory", "parameters": {"dir_path": "src/utils"}}
+  { "tool": "create_directory", "parameters": { "dir_path": "src/utils" } }
   ```
 
 ### Code Search
 
 - **list_files** - Find files by pattern (glob)
+
   ```json
-  {"tool": "list_files", "parameters": {"pattern": "**/*.py"}}
+  { "tool": "list_files", "parameters": { "pattern": "**/*.py" } }
   ```
 
 - **search_files** - Search for text in files (grep-like)
   ```json
-  {"tool": "search_files", "parameters": {"pattern": "def main", "file_pattern": "*.py"}}
+  {
+    "tool": "search_files",
+    "parameters": { "pattern": "def main", "file_pattern": "*.py" }
+  }
   ```
 
 ### Command Execution
 
 - **run_bash** - Execute bash commands
   ```json
-  {"tool": "run_bash", "parameters": {"command": "pytest tests/"}}
+  { "tool": "run_bash", "parameters": { "command": "pytest tests/" } }
   ```
 
 ## Special Commands
 
 Use these commands during a Kubrick session:
 
-| Command | Description |
-|---------|-------------|
-| `/save` | Manually save the current conversation |
-| `/list [N]` | List saved conversations (default: 20) |
-| `/config` | Show current configuration |
-| `/config KEY VALUE` | Update a configuration setting |
-| `/delete ID` | Delete a saved conversation |
-| `/help` | Show help information |
-| `exit` or `quit` | Save and exit |
+| Command             | Description                                                             |
+| ------------------- | ----------------------------------------------------------------------- |
+| `/save`             | Manually save the current conversation                                  |
+| `/list [N]`         | List saved conversations (default: 20, shows numbered list)             |
+| `/load <#\|ID>`     | Load a conversation by number (from /list) or ID                        |
+| `/config`           | Show current configuration                                              |
+| `/config KEY VALUE` | Update a configuration setting                                          |
+| `/delete ID`        | Delete a saved conversation                                             |
+| `/debug`            | Show debug information (conversation ID, message count, provider, etc.) |
+| `/debug prompt`     | Display the full system prompt being used                               |
+| `/help`             | Show all available in-session commands                                  |
+| `exit` or `quit`    | Save conversation and exit Kubrick                                      |
+
+**Loading Conversations:**
+
+You can load conversations in two ways:
+
+1. **In-session (new!)**: Use `/list` to see numbered conversations, then `/load <#>`:
+
+   ```bash
+   You: /list
+   # Shows numbered list of conversations
+   You: /load 1              # Load conversation #1 from the list
+   You: /load 20240118_143022  # Or load by ID
+   ```
+
+2. **At startup**: Use `--load` when starting Kubrick:
+   ```bash
+   kubrick --load 20240118_143022              # Load by ID
+   kubrick --load /path/to/conversation.json   # Load by file path
+   ```
 
 ### Examples
 
@@ -210,12 +328,50 @@ Kubrick automatically saves conversations to `~/.kubrick/conversations/` after e
 
 ### Loading Conversations
 
+Kubrick supports loading conversations in two ways:
+
+#### 1. By Conversation ID (from ~/.kubrick/conversations/)
+
 ```bash
-# Load by ID
+# Load by ID (searches in ~/.kubrick/conversations/)
 kubrick --load 20240118_143022
 
-# List available conversations
+# List available conversations to find IDs
 You: /list 20
+```
+
+#### 2. By File Path (from anywhere)
+
+```bash
+# Load from absolute path
+kubrick --load /path/to/conversation.json
+
+# Load from relative path
+kubrick --load ../saved-conversations/session.json
+
+# Load from home directory (~ expansion supported)
+kubrick --load ~/backup/important-conversation.json
+```
+
+**Use Cases:**
+
+- **Share conversations**: Export a conversation JSON and share with team members
+- **Version control**: Save conversations in your project repo for documentation
+- **Backup/restore**: Keep important conversations backed up outside ~/.kubrick
+- **Cross-machine**: Move conversations between development machines
+
+**Example Workflow:**
+
+```bash
+# Save a conversation to your project
+cp ~/.kubrick/conversations/20240118_143022.json ~/my-project/ai-debug-session.json
+
+# Commit to version control
+git add ai-debug-session.json
+git commit -m "Add AI debugging session"
+
+# Load it later (on any machine with the repo)
+kubrick --load ~/my-project/ai-debug-session.json
 ```
 
 ### Conversation Files
@@ -263,11 +419,13 @@ Each conversation is saved as JSON:
 **Cannot connect to Triton:**
 
 1. Verify Triton is running:
+
    ```bash
    curl http://localhost:8000/v2/health/live
    ```
 
 2. Check config:
+
    ```bash
    You: /config
    ```
@@ -280,6 +438,7 @@ Each conversation is saved as JSON:
    ```
 
 **Docker network issues:**
+
 - Ensure `--network host` mode is used
 - Triton must be accessible at `localhost:8000` on the host
 
@@ -288,11 +447,13 @@ Each conversation is saved as JSON:
 **Files not found:**
 
 1. Run Docker from your project directory:
+
    ```bash
    cd /path/to/project
    ```
 
 2. Include working directory mount:
+
    ```bash
    -v $(pwd):/workspace
    ```
@@ -305,7 +466,7 @@ See [DOCKER.md](DOCKER.md) for detailed troubleshooting.
 
 ### Creating a New File
 
-```
+````
 You: Create a Python script that sorts a list of numbers
 Assistant: I'll create a Python script to sort numbers for you.
 
@@ -317,14 +478,16 @@ Assistant: I'll create a Python script to sort numbers for you.
     "content": "def sort_numbers(numbers):\n    return sorted(numbers)\n\nif __name__ == \"__main__\":\n    nums = [5, 2, 8, 1, 9]\n    print(f\"Original: {nums}\")\n    print(f\"Sorted: {sort_numbers(nums)}\")\n"
   }
 }
-```
+````
 
 ✓ Created file: sort_numbers.py
+
 ```
 
 ### Searching Code
 
 ```
+
 You: Find all TODO comments in Python files
 Assistant: Searching for TODO comments...
 
@@ -333,7 +496,8 @@ Assistant: Searching for TODO comments...
 ```
 
 Found 3 matches in 2 files.
-```
+
+````
 
 ## Development
 
@@ -344,7 +508,7 @@ pip install -e ".[dev]"
 pytest tests/
 pytest tests/test_triton.py
 pytest --cov=kubrick_cli tests/
-```
+````
 
 ### Project Structure
 

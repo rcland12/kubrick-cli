@@ -64,7 +64,6 @@ class TaskClassifier:
         Returns:
             TaskClassification object with detailed classification
         """
-        # Build classification prompt
         classification_messages = [
             {
                 "role": "system",
@@ -146,12 +145,10 @@ Respond with ONLY the JSON object, no other text.""",
         ]
 
         try:
-            # Get classification from LLM (non-streaming for speed)
             response = self.llm_client.generate(
                 classification_messages, stream_options={}
             )
 
-            # Parse JSON response
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
 
@@ -175,7 +172,6 @@ Respond with ONLY the JSON object, no other text.""",
                     requires_tools=requires_tools,
                 )
 
-            # Fallback: default to SIMPLE if parsing fails
             console.print(
                 "[yellow]⚠ Classification parsing failed, defaulting to SIMPLE[/yellow]"
             )
