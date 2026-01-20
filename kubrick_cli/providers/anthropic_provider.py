@@ -62,7 +62,6 @@ class AnthropicProvider(ProviderAdapter):
         Yields:
             Text chunks as they arrive
         """
-        # Anthropic requires system message to be separate
         system_message = ""
         conversation_messages = []
 
@@ -72,7 +71,6 @@ class AnthropicProvider(ProviderAdapter):
             else:
                 conversation_messages.append(msg)
 
-        # Build request payload
         payload = {
             "model": self._model_name,
             "messages": conversation_messages,
@@ -83,7 +81,6 @@ class AnthropicProvider(ProviderAdapter):
         if system_message:
             payload["system"] = system_message
 
-        # Add optional parameters
         if stream_options:
             if "temperature" in stream_options:
                 payload["temperature"] = stream_options["temperature"]
@@ -98,7 +95,6 @@ class AnthropicProvider(ProviderAdapter):
 
         body = json.dumps(payload).encode("utf-8")
 
-        # Create HTTPS connection
         context = ssl.create_default_context()
         conn = http.client.HTTPSConnection(
             self.base_url, 443, timeout=self.timeout, context=context
@@ -112,7 +108,6 @@ class AnthropicProvider(ProviderAdapter):
                 error_body = response.read().decode("utf-8")
                 raise Exception(f"Anthropic API error {response.status}: {error_body}")
 
-            # Read streaming response
             buffer = ""
             while True:
                 chunk = response.read(1024)
@@ -124,7 +119,6 @@ class AnthropicProvider(ProviderAdapter):
 
                 buffer += chunk
 
-                # Process complete lines
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
                     line = line.strip()
@@ -132,22 +126,18 @@ class AnthropicProvider(ProviderAdapter):
                     if not line:
                         continue
 
-                    # Anthropic SSE format
                     if line.startswith("data: "):
                         line = line[6:]
 
                     if line.startswith("event: "):
-                        # Skip event lines
                         continue
 
                     try:
                         data = json.loads(line)
 
-                        # Handle different event types
                         event_type = data.get("type")
 
                         if event_type == "content_block_delta":
-                            # Extract text delta
                             delta = data.get("delta", {})
                             if delta.get("type") == "text_delta":
                                 text = delta.get("text", "")
@@ -155,11 +145,9 @@ class AnthropicProvider(ProviderAdapter):
                                     yield text
 
                         elif event_type == "message_stop":
-                            # End of stream
                             return
 
                     except json.JSONDecodeError:
-                        # Skip malformed JSON
                         continue
 
         finally:
@@ -191,7 +179,6 @@ class AnthropicProvider(ProviderAdapter):
             True if healthy, False otherwise
         """
         try:
-            # Simple health check - just verify we can connect
             context = ssl.create_default_context()
             conn = http.client.HTTPSConnection(
                 self.base_url, 443, timeout=10, context=context
@@ -200,11 +187,9 @@ class AnthropicProvider(ProviderAdapter):
                 "x-api-key": self.api_key,
                 "anthropic-version": self.api_version,
             }
-            # Try to make a minimal request
             conn.request("GET", "/v1/models", headers=headers)
             response = conn.getresponse()
             conn.close()
-            # Anthropic might not have a /v1/models endpoint, so we check for 404 as well
             return response.status in (200, 404)
         except Exception:
             return False

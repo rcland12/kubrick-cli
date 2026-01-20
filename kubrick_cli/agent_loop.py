@@ -1,19 +1,17 @@
 """Multi-step agentic execution loop with completion detection."""
 
 import re
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from rich.console import Console
 
 console = Console()
 
-# Import display manager (will be None if not available)
 try:
     from .display import DisplayManager
 except ImportError:
     DisplayManager = None
 
-# Import scheduler (will be None if not available)
 try:
     from .scheduler import ToolScheduler
 except ImportError:
@@ -23,7 +21,6 @@ except ImportError:
 class CompletionDetector:
     """Detects when an agent has completed its task."""
 
-    # Explicit completion markers the agent can use
     COMPLETION_MARKERS = [
         "TASK_COMPLETE",
         "PLAN_COMPLETE",
@@ -50,22 +47,17 @@ class CompletionDetector:
         Returns:
             Tuple of (is_complete, reason)
         """
-        # Check for explicit completion markers
         for marker in CompletionDetector.COMPLETION_MARKERS:
             if marker in response_text:
                 return True, f"explicit_marker:{marker}"
 
-        # Max iterations reached (fallback safety)
         if iteration >= max_iterations:
             return True, "max_iterations_reached"
 
-        # If no tool calls and response looks conclusive
         if not has_tool_calls:
-            # Check if response appears to be a final summary/conclusion
             if CompletionDetector._looks_conclusive(response_text):
                 return True, "conclusive_response"
 
-        # Otherwise, continue
         return False, "continuing"
 
     @staticmethod
@@ -78,7 +70,6 @@ class CompletionDetector:
         """
         text_lower = text.lower()
 
-        # Look for summary/conclusion indicators
         conclusive_patterns = [
             r"\b(done|completed|finished|ready)\b",
             r"\b(successfully|all set|good to go)\b",
@@ -163,7 +154,6 @@ class AgentLoop:
                 f"\n[dim]→ Agent iteration {iteration}/{self.max_iterations}[/dim]"
             )
 
-            # Get LLM response
             console.print("[bold cyan]Assistant:[/bold cyan]")
             chunks = []
 
@@ -185,20 +175,15 @@ class AgentLoop:
                     "tool_calls": total_tool_calls,
                 }
 
-            # Get full response
             response_text = "".join(chunks)
 
-            # Add to conversation
             messages.append({"role": "assistant", "content": response_text})
 
-            # Display with custom callback if provided
             if display_callback:
                 display_callback(response_text)
 
-            # Parse tool calls
             tool_calls = tool_parser(response_text)
 
-            # Check completion
             is_complete, reason = CompletionDetector.is_complete(
                 response_text=response_text,
                 has_tool_calls=len(tool_calls) > 0,
@@ -215,9 +200,7 @@ class AgentLoop:
                     "tool_calls": total_tool_calls,
                 }
 
-            # Execute tool calls if any
             if tool_calls:
-                # Enforce max tools per turn
                 if len(tool_calls) > self.max_tools_per_turn:
                     console.print(
                         f"[yellow]⚠ Too many tool calls ({len(tool_calls)}), "
@@ -229,44 +212,32 @@ class AgentLoop:
                     f"\n[yellow]Executing {len(tool_calls)} tool(s)...[/yellow]\n"
                 )
 
-                # Execute tools (with or without scheduler)
                 if self.tool_scheduler and len(tool_calls) > 1:
-                    # Use scheduler for parallel execution
-                    execution_results = self.tool_scheduler.execute_tools(
-                        tool_calls
-                    )
+                    execution_results = self.tool_scheduler.execute_tools(tool_calls)
                 else:
-                    # Execute sequentially
                     execution_results = [
                         self.tool_executor.execute(tool_name, params)
                         for tool_name, params in tool_calls
                     ]
 
-                # Display and collect results
                 tool_results = []
                 for (tool_name, parameters), result in zip(
                     tool_calls, execution_results
                 ):
-                    # Display tool call and result
                     if self.display_manager:
-                        self.display_manager.display_tool_call(
-                            tool_name, parameters
-                        )
+                        self.display_manager.display_tool_call(tool_name, parameters)
                         self.display_manager.display_tool_result(
                             tool_name, result, result["success"]
                         )
                     else:
                         console.print(f"[cyan]→ Called {tool_name}[/cyan]")
                         if result["success"]:
-                            console.print(
-                                f"[green]✓ {tool_name} succeeded[/green]"
-                            )
+                            console.print(f"[green]✓ {tool_name} succeeded[/green]")
                         else:
                             console.print(
                                 f"[red]✗ {tool_name} failed: {result['error']}[/red]"
                             )
 
-                    # Add to results
                     if result["success"]:
                         tool_results.append(
                             f"Tool: {tool_name}\nResult: {result['result']}"
@@ -278,7 +249,6 @@ class AgentLoop:
 
                     total_tool_calls += 1
 
-                # Add tool results to conversation
                 tool_results_text = "\n\n".join(tool_results)
                 messages.append(
                     {
@@ -287,15 +257,12 @@ class AgentLoop:
                     }
                 )
 
-                # Continue to next iteration
                 continue
 
-            # If no tool calls and not complete, something might be wrong
             console.print(
                 "[yellow]⚠ No tool calls and task not marked complete. Continuing...[/yellow]"
             )
 
-        # Max iterations reached
         console.print(
             f"\n[yellow]⚠ Max iterations ({self.max_iterations}) reached[/yellow]"
         )

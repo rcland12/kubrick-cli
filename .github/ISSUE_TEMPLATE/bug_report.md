@@ -1,9 +1,9 @@
 ---
 name: Bug Report
 about: Create a report to help us improve
-title: '[BUG] '
-labels: 'bug'
-assignees: ''
+title: "[BUG] "
+labels: "bug"
+assignees: ""
 ---
 
 ## Bug Description
@@ -34,7 +34,7 @@ Paste any error messages here
 
 ## Environment
 
-- **OS**: [e.g., Ubuntu 22.04, macOS 13, Windows 11]
+- **OS**: [e.g., Ubuntu 24.04, macOS 13, Windows 11]
 - **Python Version**: [e.g., 3.11.5]
 - **Kubrick Version**: [e.g., 0.1.1]
 - **Installation Method**: [pip, Docker, source]

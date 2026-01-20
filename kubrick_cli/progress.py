@@ -49,9 +49,7 @@ class ProgressTracker:
         self.total_steps = total_steps or 0
         self.step_count = 0
 
-        # Create progress bar
         if total_steps:
-            # Determinate progress (with bar)
             self.progress = Progress(
                 SpinnerColumn(),
                 TextColumn("[bold cyan]{task.description}"),
@@ -61,7 +59,6 @@ class ProgressTracker:
                 console=console,
             )
         else:
-            # Indeterminate progress (spinner only)
             self.progress = Progress(
                 SpinnerColumn(),
                 TextColumn("[bold cyan]{task.description}"),
@@ -70,13 +67,9 @@ class ProgressTracker:
             )
 
         self.progress.start()
-        self.current_task = self.progress.add_task(
-            description, total=total_steps
-        )
+        self.current_task = self.progress.add_task(description, total=total_steps)
 
-    def update(
-        self, description: str = None, advance: int = 1, completed: int = None
-    ):
+    def update(self, description: str = None, advance: int = 1, completed: int = None):
         """
         Update progress.
 
@@ -118,7 +111,6 @@ class ProgressTracker:
             description: Description of the new step
         """
         if not self.enabled or not self.progress:
-            # Still print step info even if progress disabled
             console.print(f"[dim]→ {description}[/dim]")
             return
 
@@ -144,9 +136,7 @@ class ProgressTracker:
             return
 
         if self.total_steps:
-            self.progress.update(
-                self.current_task, completed=self.total_steps
-            )
+            self.progress.update(self.current_task, completed=self.total_steps)
 
         self.progress.update(self.current_task, description=message)
         self.progress.stop()

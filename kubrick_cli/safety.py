@@ -85,9 +85,7 @@ class SafetyManager:
         """
         self.config = config
 
-    def validate_bash_command(
-        self, command: str
-    ) -> Tuple[bool, Optional[str]]:
+    def validate_bash_command(self, command: str) -> Tuple[bool, Optional[str]]:
         """
         Validate a bash command for dangerous patterns.
 
@@ -101,16 +99,13 @@ class SafetyManager:
         """
         command_lower = command.lower()
 
-        # Check each dangerous pattern
         for pattern, description in self.DANGEROUS_PATTERNS:
             if re.search(pattern, command_lower, re.IGNORECASE):
                 return False, f"Dangerous command detected: {description}"
 
         return True, None
 
-    def get_user_confirmation(
-        self, warning: str, command: str
-    ) -> bool:
+    def get_user_confirmation(self, warning: str, command: str) -> bool:
         """
         Get user confirmation for a dangerous command.
 
@@ -122,10 +117,8 @@ class SafetyManager:
             True if user confirms, False otherwise
         """
         if not self.config.require_dangerous_command_confirmation:
-            # Auto-allow if confirmation disabled
             return True
 
-        # Display warning
         console.print(
             Panel(
                 f"[bold red]⚠️  WARNING[/bold red]\n\n"
@@ -138,7 +131,6 @@ class SafetyManager:
             )
         )
 
-        # Ask for confirmation
         confirmed = Confirm.ask(
             "[bold red]Do you want to execute this command?[/bold red]",
             default=False,
@@ -173,9 +165,7 @@ class SafetyManager:
 
         return True
 
-    def check_iteration_limit(
-        self, current: int, max_iterations: int
-    ) -> bool:
+    def check_iteration_limit(self, current: int, max_iterations: int) -> bool:
         """
         Check if iteration limit has been reached.
 
@@ -194,9 +184,7 @@ class SafetyManager:
 
         return True
 
-    def check_tool_limit(
-        self, current: int, max_tools: int
-    ) -> bool:
+    def check_tool_limit(self, current: int, max_tools: int) -> bool:
         """
         Check if tool call limit has been reached.
 

@@ -20,6 +20,7 @@ The Kubrick provider system uses **automatic discovery**. This means:
 2. That's it! No need to edit any other files.
 
 Your provider will automatically:
+
 - Be discovered and registered
 - Appear in the setup wizard
 - Be available for use via configuration
@@ -199,6 +200,7 @@ config_fields=[
 ```
 
 **Field Types:**
+
 - `text`: Regular text input
 - `password`: Hidden password input
 - `url`: URL input

@@ -31,6 +31,7 @@ The kubrick-cli project uses GitHub Actions for automated testing, building, and
 ### CI Workflow (`.github/workflows/ci.yml`)
 
 **Triggers:**
+
 - Push to any branch
 - Pull request to any branch
 
@@ -53,6 +54,7 @@ The kubrick-cli project uses GitHub Actions for automated testing, building, and
 ### CD Workflow (`.github/workflows/cd.yml`)
 
 **Triggers:**
+
 - Push of version tags (format: `v*.*.*`, e.g., `v0.1.2`)
 
 **Jobs:**
@@ -197,6 +199,7 @@ git pull origin master
 ```
 
 The script will:
+
 1. ✅ Check you're on master branch
 2. ✅ Check working directory is clean
 3. ✅ Bump version in `pyproject.toml`
@@ -235,10 +238,12 @@ Once you push a version tag, the CD workflow automatically:
 4. **Creates GitHub Release** - Includes changelog and downloadable artifacts
 
 **Monitor Progress:**
+
 - Go to: https://github.com/rcland12/kubrick-cli/actions
 - Watch the "CD - Release" workflow
 
 **Release Locations:**
+
 - 📦 PyPI: https://pypi.org/project/kubrick-cli/
 - 🐳 Docker Hub: https://hub.docker.com/r/rcland12/kubrick-cli
 - 🎉 GitHub: https://github.com/rcland12/kubrick-cli/releases
@@ -332,13 +337,13 @@ repos:
     rev: 6.0.0
     hooks:
       - id: flake8
-        args: ['--max-line-length=100', '--extend-ignore=E203,W503']
+        args: ["--max-line-length=100", "--extend-ignore=E203,W503"]
 
   - repo: https://github.com/PyCQA/bandit
     rev: 1.7.5
     hooks:
       - id: bandit
-        args: ['-ll']
+        args: ["-ll"]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.4.0
@@ -360,7 +365,7 @@ name: Security Scan
 
 on:
   schedule:
-    - cron: '0 0 * * 0'  # Weekly
+    - cron: "0 0 * * 0" # Weekly
   workflow_dispatch:
 
 jobs:
@@ -391,7 +396,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
       - run: |
           pip install sphinx sphinx-rtd-theme
           cd docs && make html
@@ -429,15 +434,15 @@ Notify your team on releases:
 
 ```yaml
 # Add to cd.yml at the end
-      - name: Send Slack Notification
-        uses: slackapi/slack-github-action@v1
-        with:
-          payload: |
-            {
-              "text": "🚀 New release: kubrick-cli v${{ steps.get_version.outputs.VERSION }}"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+- name: Send Slack Notification
+  uses: slackapi/slack-github-action@v1
+  with:
+    payload: |
+      {
+        "text": "🚀 New release: kubrick-cli v${{ steps.get_version.outputs.VERSION }}"
+      }
+  env:
+    SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
 ```
 
 ### 7. Add Docker Image Scanning
@@ -446,17 +451,17 @@ Scan Docker images for vulnerabilities:
 
 ```yaml
 # Add to cd.yml after docker build
-      - name: Scan Docker image
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: rcland12/kubrick-cli:${{ steps.get_version.outputs.VERSION }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
+- name: Scan Docker image
+  uses: aquasecurity/trivy-action@master
+  with:
+    image-ref: rcland12/kubrick-cli:${{ steps.get_version.outputs.VERSION }}
+    format: "sarif"
+    output: "trivy-results.sarif"
 
-      - name: Upload scan results
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: 'trivy-results.sarif'
+- name: Upload scan results
+  uses: github/codeql-action/upload-sarif@v2
+  with:
+    sarif_file: "trivy-results.sarif"
 ```
 
 ## Troubleshooting
@@ -464,20 +469,24 @@ Scan Docker images for vulnerabilities:
 ### PyPI Publishing Fails
 
 **Error**: "File already exists"
+
 - **Cause**: Version already published
 - **Solution**: Bump version number and try again
 
 **Error**: "Invalid credentials"
+
 - **Cause**: PYPI_API_TOKEN not set or invalid
 - **Solution**: Regenerate token and update secret
 
 ### Docker Push Fails
 
 **Error**: "Authentication required"
+
 - **Cause**: DOCKERHUB_TOKEN not set
 - **Solution**: Create access token and add to secrets
 
 **Error**: "Tag already exists"
+
 - **Cause**: Image with same tag already pushed
 - **Solution**: This shouldn't happen with proper versioning. Delete tag if needed.
 
@@ -498,6 +507,7 @@ Scan Docker images for vulnerabilities:
 ## Support
 
 For issues with the CI/CD pipeline:
+
 1. Check the [Actions](https://github.com/rcland12/kubrick-cli/actions) tab
 2. Review workflow logs for errors
 3. Create an issue with relevant logs

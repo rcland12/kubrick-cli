@@ -3,11 +3,8 @@
 
 import argparse
 import json
-import os
 import re
-import sys
 from datetime import datetime
-from pathlib import Path
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -24,7 +21,7 @@ from .planning import PlanningPhase
 from .providers.factory import ProviderFactory
 from .safety import SafetyConfig, SafetyManager
 from .scheduler import ToolScheduler
-from .tools import TOOL_DEFINITIONS, ToolExecutor, get_tools_prompt
+from .tools import ToolExecutor, get_tools_prompt
 
 console = Console()
 
@@ -50,11 +47,9 @@ class KubrickCLI:
         """
         self.config = config
 
-        # Override provider if specified
         if provider_override:
             config.set("provider", provider_override)
 
-        # Create provider using factory
         try:
             self.provider = ProviderFactory.create_provider(config.get_all())
             console.print(
@@ -68,23 +63,16 @@ class KubrickCLI:
             )
             raise
 
-        # Alias for backward compatibility
         self.client = self.provider
 
-        # Initialize safety manager
-        self.safety_manager = SafetyManager(
-            SafetyConfig.from_config(config.get_all())
-        )
+        self.safety_manager = SafetyManager(SafetyConfig.from_config(config.get_all()))
 
-        # Initialize tool executor with safety manager
         self.tool_executor = ToolExecutor(
             working_dir=working_dir, safety_manager=self.safety_manager
         )
 
-        # Initialize display manager
         self.display_manager = DisplayManager(config.get_all())
 
-        # Initialize tool scheduler
         enable_parallel = config.get("enable_parallel_tools", True)
         max_workers = config.get("max_parallel_workers", 3)
         self.tool_scheduler = ToolScheduler(
@@ -93,7 +81,6 @@ class KubrickCLI:
             enable_parallel=enable_parallel,
         )
 
-        # Initialize agent loop with config values
         max_iterations = config.get("max_iterations", 15)
         max_tools_per_turn = config.get("max_tools_per_turn", 5)
         timeout_seconds = config.get("total_timeout_seconds", 600)
@@ -109,7 +96,6 @@ class KubrickCLI:
             tool_scheduler=self.tool_scheduler,
         )
 
-        # Initialize task classifier and planning phase
         self.classifier = TaskClassifier(self.provider)
         self.planning_phase = PlanningPhase(
             llm_client=self.provider,
@@ -117,22 +103,22 @@ class KubrickCLI:
             agent_loop=self.agent_loop,
         )
 
-        # Interrupt handling state
         self.interrupt_count = 0
 
-        # Generate conversation ID
+        self.last_listed_conversations = []
+
         self.conversation_id = conversation_id or datetime.now().strftime(
             "%Y%m%d_%H%M%S"
         )
 
-        # Initialize or load conversation
         if conversation_id:
             loaded = self._load_conversation(conversation_id)
             if loaded:
                 self.messages = loaded
             else:
                 console.print(
-                    f"[yellow]Conversation {conversation_id} not found, starting new conversation[/yellow]"
+                    f"[yellow]Conversation {conversation_id} not found, "
+                    "starting new conversation[/yellow]"
                 )
                 self.messages = self._get_initial_messages()
         else:
@@ -143,13 +129,15 @@ class KubrickCLI:
         return [
             {
                 "role": "system",
-                "content": f"""You are Kubrick, an AI coding assistant with agentic capabilities and file system access.
+                "content": f"""You are Kubrick, an AI coding assistant with agentic \
+capabilities and file system access.
 
 Current working directory: {self.tool_executor.working_dir}
 
 # Agentic Behavior
 
-You can ITERATE through multiple tool calls until a task is complete. You are not limited to a single response.
+You can ITERATE through multiple tool calls until a task is complete. \
+You are not limited to a single response.
 
 ## Process
 
@@ -226,7 +214,8 @@ Assistant: I'll create that file for you.
   "tool": "write_file",
   "parameters": {{
     "file_path": "test.py",
-    "content": "def hello_world():\\n    print('Hello, World!')\\n\\nif __name__ == '__main__':\\n    hello_world()\\n"
+    "content": "def hello_world():\\n    \
+print('Hello, World!')\\n\\nif __name__ == '__main__':\\n    hello_world()\\n"
   }}
 }}
 ```
@@ -243,7 +232,8 @@ Assistant: I'll first read the file to understand its structure.
 }}
 ```
 
-[After seeing the results, I'll add logging and continue iterating until done, then say TASK_COMPLETE]
+[After seeing the results, I'll add logging and continue iterating until done, \
+then say TASK_COMPLETE]
 """,
             }
         ]
@@ -264,9 +254,7 @@ Assistant: I'll first read the file to understand its structure.
                 "model_name": self.provider.model_name,
                 "saved_at": datetime.now().isoformat(),
             }
-            self.config.save_conversation(
-                self.conversation_id, self.messages, metadata
-            )
+            self.config.save_conversation(self.conversation_id, self.messages, metadata)
 
     def parse_tool_calls(self, text: str) -> list:
         """
@@ -280,7 +268,6 @@ Assistant: I'll first read the file to understand its structure.
         """
         tool_calls = []
 
-        # Primary parser: Find all ```tool_call blocks (correct format)
         pattern = r"```tool_call\s*\n(.*?)\n```"
         matches = re.findall(pattern, text, re.DOTALL)
 
@@ -295,11 +282,10 @@ Assistant: I'll first read the file to understand its structure.
                 console.print(f"[red]Failed to parse tool call: {e}[/red]")
                 continue
 
-        # Fallback parser: Look for standalone JSON objects that look like tool calls
-        # This handles cases where the LLM forgot the markdown fence
         if not tool_calls:
-            # Look for JSON objects with "tool" and "parameters" keys
-            json_pattern = r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*\{[^}]*\}\s*\}'
+            json_pattern = (
+                r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*\{[^}]*\}\s*\}'
+            )
             json_matches = re.findall(json_pattern, text, re.DOTALL)
 
             if json_matches:
@@ -308,9 +294,9 @@ Assistant: I'll first read the file to understand its structure.
                     "Parsing anyway, but please use ```tool_call format.[/yellow]"
                 )
 
-                # Try to extract the full JSON objects
-                # More lenient pattern to capture the whole object
-                full_json_pattern = r'(\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{.*?\}\s*\})'
+                full_json_pattern = (
+                    r'(\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{.*?\}\s*\})'
+                )
                 for match in re.finditer(full_json_pattern, text, re.DOTALL):
                     try:
                         tool_data = json.loads(match.group(1))
@@ -335,17 +321,12 @@ Assistant: I'll first read the file to understand its structure.
         """
         full_text = "".join(chunks)
 
-        # Split response around tool calls for better display
         parts = re.split(r"(```tool_call.*?```)", full_text, flags=re.DOTALL)
 
         for part in parts:
             if part.startswith("```tool_call"):
-                # Display tool call in a panel
-                console.print(
-                    Panel(part, title="Tool Call", border_style="cyan")
-                )
+                console.print(Panel(part, title="Tool Call", border_style="cyan"))
             elif part.strip():
-                # Display regular text as markdown
                 console.print(Markdown(part))
 
         return full_text
@@ -357,18 +338,13 @@ Assistant: I'll first read the file to understand its structure.
         Args:
             user_message: User's message
         """
-        # Add user message to conversation
         self.messages.append({"role": "user", "content": user_message})
 
         try:
-            # Step 1: Classify task (if enabled)
             classification = None
             if self.config.get("enable_task_classification", True):
-                classification = self.classifier.classify(
-                    user_message, self.messages
-                )
+                classification = self.classifier.classify(user_message, self.messages)
 
-                # Step 2: Get execution strategy based on classification
                 exec_config = ExecutionStrategy.get_execution_config(
                     classification,
                     self.provider.provider_name,
@@ -381,7 +357,6 @@ Assistant: I'll first read the file to understand its structure.
                     f"max_iter: {exec_config.max_iterations})[/dim]"
                 )
 
-                # Step 3: Switch model if needed (and provider supports it)
                 current_model = self.provider.model_name
                 target_model = exec_config.hyperparameters.get("model")
 
@@ -392,27 +367,20 @@ Assistant: I'll first read the file to understand its structure.
                             f"[dim]→ Switched model: {current_model} → {target_model}[/dim]"
                         )
                     except Exception:
-                        # Provider doesn't support model switching, continue with current
                         pass
 
             else:
-                # Classification disabled, use default complex config
                 exec_config = ExecutionStrategy.get_execution_config(
-                    None,  # Will trigger fallback
+                    None,
                     self.provider.provider_name,
                     self.provider.model_name,
                 )
 
-            # Step 4: Execute based on mode
             if exec_config.mode == "conversational":
-                # Conversational mode: single-turn response, no tools
                 self._run_conversational_turn(exec_config)
 
             else:
-                # Agentic modes: use agent loop
-                self._run_agentic_turn(
-                    classification, exec_config, user_message
-                )
+                self._run_agentic_turn(classification, exec_config, user_message)
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted[/yellow]")
@@ -432,7 +400,6 @@ Assistant: I'll first read the file to understand its structure.
         console.print("[bold cyan]Assistant:[/bold cyan]")
         chunks = []
 
-        # Pass hyperparameters to provider
         stream_options = exec_config.hyperparameters.copy()
 
         for chunk in self.provider.generate_streaming(
@@ -443,7 +410,6 @@ Assistant: I'll first read the file to understand its structure.
 
         console.print("\n")
 
-        # Add response to conversation
         response_text = "".join(chunks)
         self.messages.append({"role": "assistant", "content": response_text})
 
@@ -456,7 +422,6 @@ Assistant: I'll first read the file to understand its structure.
             exec_config: Execution configuration
             user_message: Original user message
         """
-        # Check if planning phase should be offered
         if (
             exec_config.use_planning
             and classification
@@ -470,19 +435,14 @@ Assistant: I'll first read the file to understand its structure.
             )
 
             if response == "yes":
-                # Execute planning phase
-                plan = self.planning_phase.execute_planning(
-                    user_message, self.messages
-                )
+                plan = self.planning_phase.execute_planning(user_message, self.messages)
 
-                # Get user approval
                 approval = self.planning_phase.get_user_approval(plan)
 
                 if not approval.get("approved", False):
                     console.print("[yellow]Task cancelled by user[/yellow]")
                     return
 
-                # If modifications requested, add them to conversation
                 if "modifications" in approval:
                     self.messages.append(
                         {
@@ -491,11 +451,9 @@ Assistant: I'll first read the file to understand its structure.
                         }
                     )
 
-        # Update agent loop max iterations for this turn
         original_max_iterations = self.agent_loop.max_iterations
         self.agent_loop.max_iterations = exec_config.max_iterations
 
-        # Run agent loop with hyperparameters
         self.agent_loop.stream_options = exec_config.hyperparameters
 
         result = self.agent_loop.run(
@@ -504,10 +462,8 @@ Assistant: I'll first read the file to understand its structure.
             display_callback=None,
         )
 
-        # Restore original max iterations
         self.agent_loop.max_iterations = original_max_iterations
 
-        # Display result summary
         if result["success"]:
             console.print(
                 f"\n[dim]Completed in {result['iterations']} iteration(s) "
@@ -523,13 +479,12 @@ Assistant: I'll first read the file to understand its structure.
                 "[bold cyan]Kubrick CLI[/bold cyan]\n"
                 f"Working directory: {self.tool_executor.working_dir}\n"
                 f"Conversation ID: {self.conversation_id}\n"
-                "Type your questions or commands. Use 'exit' or 'quit' to exit.\n"
-                "Type '/help' to see available commands.",
+                "Type your questions or commands. Type 'exit' or 'quit' to exit.\n"
+                "Type '/help' to see all available in-session commands.",
                 border_style="cyan",
             )
         )
 
-        # Check provider health
         if not self.provider.is_healthy():
             console.print(
                 f"[red]Warning: Cannot connect to {self.provider.provider_name} provider[/red]"
@@ -542,14 +497,12 @@ Assistant: I'll first read the file to understand its structure.
             try:
                 user_input = Prompt.ask("\n[bold green]You[/bold green]")
 
-                # Reset interrupt count when user enters a message
                 self.interrupt_count = 0
 
                 if not user_input.strip():
                     continue
 
                 if user_input.lower() in ["exit", "quit", "q"]:
-                    # Save conversation before exiting
                     self._save_conversation()
                     console.print(
                         f"[cyan]Conversation saved as {self.conversation_id}[/cyan]"
@@ -557,39 +510,38 @@ Assistant: I'll first read the file to understand its structure.
                     console.print("[cyan]Goodbye![/cyan]")
                     break
 
-                # Handle special commands
                 if user_input.startswith("/"):
                     self._handle_command(user_input)
                     continue
 
                 self.run_conversation_turn(user_input)
 
-                # Auto-save after each turn
                 self._save_conversation()
 
             except KeyboardInterrupt:
                 self.interrupt_count += 1
 
                 if self.interrupt_count == 1:
-                    # First Ctrl+C: Clear prompt
-                    console.print("\n[yellow]^C (Press again to start new conversation, once more to exit)[/yellow]")
+                    console.print(
+                        "\n[yellow]^C (Press again to start new conversation, "
+                        "once more to exit)[/yellow]"
+                    )
                     continue
 
                 elif self.interrupt_count == 2:
-                    # Second Ctrl+C: Start new conversation
                     console.print("\n[yellow]Starting new conversation...[/yellow]")
                     self._save_conversation()
 
-                    # Reset conversation
                     self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S")
                     self.messages = self._get_initial_messages()
 
-                    console.print(f"[cyan]New conversation ID: {self.conversation_id}[/cyan]")
+                    console.print(
+                        f"[cyan]New conversation ID: {self.conversation_id}[/cyan]"
+                    )
                     console.print("[dim]Press Ctrl+C once more to exit[/dim]")
                     continue
 
                 else:
-                    # Third Ctrl+C: Exit
                     self._save_conversation()
                     console.print(
                         f"\n[cyan]Conversation saved as {self.conversation_id}[/cyan]"
@@ -619,13 +571,16 @@ Assistant: I'll first read the file to understand its structure.
                 console.print("[yellow]No saved conversations found[/yellow]")
                 return
 
+            self.last_listed_conversations = conversations
+
             table = Table(title="Saved Conversations")
+            table.add_column("#", style="magenta", justify="right")
             table.add_column("ID", style="cyan")
             table.add_column("Messages", justify="right", style="green")
             table.add_column("Working Dir", style="dim")
             table.add_column("Modified", style="yellow")
 
-            for conv in conversations:
+            for idx, conv in enumerate(conversations, start=1):
                 conv_id = conv["id"]
                 msg_count = str(conv["message_count"])
                 working_dir = conv["metadata"].get("working_dir", "N/A")
@@ -633,13 +588,15 @@ Assistant: I'll first read the file to understand its structure.
                     "%Y-%m-%d %H:%M"
                 )
 
-                table.add_row(conv_id, msg_count, working_dir, modified)
+                table.add_row(str(idx), conv_id, msg_count, working_dir, modified)
 
             console.print(table)
+            console.print(
+                "[dim]Use '/load <#>' to load a conversation by number (e.g., /load 1)[/dim]"
+            )
 
         elif cmd == "/config":
             if len(parts) == 1:
-                # Show current config
                 config_data = self.config.get_all()
                 table = Table(title="Current Configuration")
                 table.add_column("Setting", style="cyan")
@@ -651,15 +608,13 @@ Assistant: I'll first read the file to understand its structure.
                 console.print(table)
 
             elif len(parts) == 3:
-                # Set config value
                 key = parts[1]
                 value = parts[2]
 
-                # Try to parse as JSON for booleans/numbers
                 try:
                     value = json.loads(value)
                 except json.JSONDecodeError:
-                    pass  # Keep as string
+                    pass
 
                 self.config.set(key, value)
                 console.print(f"[green]Set {key} = {value}[/green]")
@@ -669,21 +624,59 @@ Assistant: I'll first read the file to understand its structure.
 
         elif cmd == "/delete":
             if len(parts) < 2:
-                console.print(
-                    "[yellow]Usage: /delete <conversation_id>[/yellow]"
-                )
+                console.print("[yellow]Usage: /delete <conversation_id>[/yellow]")
                 return
 
             conv_id = parts[1]
             if self.config.delete_conversation(conv_id):
                 console.print(f"[green]Deleted conversation {conv_id}[/green]")
             else:
+                console.print(f"[yellow]Conversation {conv_id} not found[/yellow]")
+
+        elif cmd == "/load":
+            if len(parts) < 2:
+                console.print("[yellow]Usage: /load <#|conversation_id|path>[/yellow]")
                 console.print(
-                    f"[yellow]Conversation {conv_id} not found[/yellow]"
+                    "[dim]Tip: Use '/list' to see available conversations[/dim]"
                 )
+                return
+
+            identifier = parts[1]
+
+            if identifier.isdigit():
+                idx = int(identifier) - 1
+                if not self.last_listed_conversations:
+                    console.print(
+                        "[yellow]No conversations listed. Use '/list' first.[/yellow]"
+                    )
+                    return
+                if idx < 0 or idx >= len(self.last_listed_conversations):
+                    console.print(
+                        "[yellow]Invalid number. "
+                        f"Choose 1-{len(self.last_listed_conversations)}[/yellow]"
+                    )
+                    return
+
+                conversation_id = self.last_listed_conversations[idx]["id"]
+            else:
+                conversation_id = identifier
+
+            conversation = self.config.load_conversation(conversation_id)
+            if not conversation:
+                console.print(
+                    f"[yellow]Failed to load conversation: {conversation_id}[/yellow]"
+                )
+                return
+
+            self.messages = conversation["messages"]
+            self.conversation_id = conversation["id"]
+
+            msg_count = len(self.messages)
+            console.print(
+                f"[green]Loaded conversation {conversation['id']} ({msg_count} messages)[/green]"
+            )
 
         elif cmd == "/debug":
-            # Show debug information
             table = Table(title="Debug Information")
             table.add_column("Item", style="cyan")
             table.add_column("Value", style="green")
@@ -696,61 +689,74 @@ Assistant: I'll first read the file to understand its structure.
 
             console.print(table)
 
-            # Show system prompt
             if len(parts) > 1 and parts[1] == "prompt":
                 console.print("\n[bold cyan]System Prompt:[/bold cyan]")
                 system_msg = next(
                     (m for m in self.messages if m["role"] == "system"), None
                 )
                 if system_msg:
-                    console.print(
-                        Panel(system_msg["content"], border_style="dim")
-                    )
+                    console.print(Panel(system_msg["content"], border_style="dim"))
                 else:
                     console.print("[yellow]No system message found[/yellow]")
 
         elif cmd == "/help":
-            console.print("""
-[bold cyan]Available Commands:[/bold cyan]
+            console.print(
+                """
+[bold cyan]In-Session Commands:[/bold cyan]
 
 [green]/save[/green]              - Save the current conversation
 [green]/list [N][/green]          - List saved conversations (default: 20)
+[green]/load <#|ID>[/green]       - Load a conversation by number or ID
 [green]/config[/green]            - Show current configuration
 [green]/config KEY VALUE[/green]  - Set a configuration value
 [green]/delete ID[/green]         - Delete a conversation
 [green]/debug[/green]             - Show debug information
 [green]/debug prompt[/green]      - Show the system prompt
 [green]/help[/green]              - Show this help message
-            """)
+[green]exit[/green] or [green]quit[/green]     - Save conversation and exit
+
+[bold cyan]Tips:[/bold cyan]
+  • Use [cyan]/list[/cyan] to see numbered conversations, \
+then [cyan]/load 1[/cyan] to load by number
+  • You can also use [cyan]--load[/cyan] when starting: \
+[dim]kubrick --load 20240118_143022[/dim]
+            """
+            )
 
         else:
             console.print(f"[yellow]Unknown command: {cmd}[/yellow]")
             console.print(
-                "[dim]Available commands: /save, /list, /config, /delete, /debug, /help[/dim]"
+                "[dim]Available commands: "
+                "/save, /list, /load, /config, /delete, /debug, /help, exit, quit[/dim]"
             )
 
 
 def main():
     """Main entry point."""
-    # Initialize config (creates ~/.kubrick if needed, runs setup wizard on first run)
     config = KubrickConfig()
 
     parser = argparse.ArgumentParser(
         description="Kubrick - AI-assisted coding CLI with agentic capabilities",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Special Commands:
+In-Session Commands:
   /save              Save the current conversation
   /list [N]          List saved conversations (default: 20)
+  /load <#|ID>       Load a conversation by number or ID
   /config            Show current configuration
   /config KEY VALUE  Set a configuration value
   /delete ID         Delete a conversation
+  /debug             Show debug information
+  /debug prompt      Show the system prompt
+  /help              Show all available commands
+  exit or quit       Save conversation and exit
 
 Examples:
-  kubrick                           # Start new conversation with configured provider
-  kubrick --load 20240118_143022    # Load a previous conversation
-  kubrick --working-dir /path/to/project  # Set working directory
-  kubrick --provider openai         # Override provider for this session
+  kubrick                                     # Start new conversation
+  kubrick --load 20240118_143022              # Load by conversation ID
+  kubrick --load /path/to/conversation.json   # Load from file path
+  kubrick --working-dir /path/to/project      # Set working directory
+  kubrick --provider openai                   # Override provider for this session
         """,
     )
 
@@ -765,7 +771,10 @@ Examples:
         "--load-conversation",
         dest="conversation_id",
         default=None,
-        help="Load a previous conversation by ID",
+        help=(
+            "Load a previous conversation by ID or file path "
+            "(e.g., 20240118_143022 or /path/to/conversation.json)"
+        ),
     )
 
     parser.add_argument(
@@ -777,7 +786,6 @@ Examples:
 
     args = parser.parse_args()
 
-    # Create and run CLI
     try:
         cli = KubrickCLI(
             config=config,
@@ -790,6 +798,7 @@ Examples:
     except Exception as e:
         console.print(f"[red]Failed to start Kubrick: {e}[/red]")
         import sys
+
         sys.exit(1)
 
 
