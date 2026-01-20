@@ -56,7 +56,6 @@ class ProviderAdapter(ABC):
     The provider will be automatically discovered and available in the setup wizard.
     """
 
-    # Providers should override this with their metadata
     METADATA: Optional[ProviderMetadata] = None
 
     @abstractmethod

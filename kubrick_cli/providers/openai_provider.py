@@ -57,14 +57,12 @@ class OpenAIProvider(ProviderAdapter):
         Yields:
             Text chunks as they arrive
         """
-        # Build request payload
         payload = {
             "model": self._model_name,
             "messages": messages,
             "stream": True,
         }
 
-        # Add optional parameters
         if stream_options:
             if "temperature" in stream_options:
                 payload["temperature"] = stream_options["temperature"]
@@ -78,7 +76,6 @@ class OpenAIProvider(ProviderAdapter):
 
         body = json.dumps(payload).encode("utf-8")
 
-        # Create HTTPS connection
         context = ssl.create_default_context()
         conn = http.client.HTTPSConnection(
             self.base_url, 443, timeout=self.timeout, context=context
@@ -92,7 +89,6 @@ class OpenAIProvider(ProviderAdapter):
                 error_body = response.read().decode("utf-8")
                 raise Exception(f"OpenAI API error {response.status}: {error_body}")
 
-            # Read streaming response
             buffer = ""
             while True:
                 chunk = response.read(1024)
@@ -104,7 +100,6 @@ class OpenAIProvider(ProviderAdapter):
 
                 buffer += chunk
 
-                # Process complete lines
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
                     line = line.strip()
@@ -112,24 +107,20 @@ class OpenAIProvider(ProviderAdapter):
                     if not line:
                         continue
 
-                    # OpenAI SSE format: "data: {json}"
                     if line.startswith("data: "):
                         line = line[6:]
 
-                    # Check for end signal
                     if line == "[DONE]":
                         return
 
                     try:
                         data = json.loads(line)
-                        # Extract delta content
                         if "choices" in data and len(data["choices"]) > 0:
                             delta = data["choices"][0].get("delta", {})
                             content = delta.get("content", "")
                             if content:
                                 yield content
                     except json.JSONDecodeError:
-                        # Skip malformed JSON
                         continue
 
         finally:

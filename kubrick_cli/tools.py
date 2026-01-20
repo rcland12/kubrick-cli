@@ -220,7 +220,6 @@ class ToolExecutor:
         file_path = self._resolve_path(params["file_path"])
         content = params["content"]
 
-        # Create parent directories if needed
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         file_path.write_text(content)
@@ -260,7 +259,6 @@ class ToolExecutor:
         directory = params.get("directory", ".")
         search_dir = self._resolve_path(directory)
 
-        # Use glob to find matching files and directories
         files = []
         directories = []
 
@@ -274,7 +272,6 @@ class ToolExecutor:
         files.sort()
         directories.sort()
 
-        # Combine results
         matches = directories + files
 
         if not matches:
@@ -300,7 +297,6 @@ class ToolExecutor:
 
         results = []
 
-        # Find files matching the file pattern
         for file_path in search_dir.glob(file_pattern):
             if not file_path.is_file():
                 continue
@@ -314,7 +310,6 @@ class ToolExecutor:
                         rel_path = file_path.relative_to(search_dir)
                         results.append(f"{rel_path}:{line_num}: {line.strip()}")
             except (UnicodeDecodeError, PermissionError):
-                # Skip binary files or files we can't read
                 continue
 
         if not results:
@@ -330,12 +325,10 @@ class ToolExecutor:
         """Run a bash command."""
         command = params["command"]
 
-        # Safety check: validate command with SafetyManager
         if self.safety_manager:
             is_safe, warning = self.safety_manager.validate_bash_command(command)
 
             if not is_safe:
-                # Request user confirmation for dangerous command
                 confirmed = self.safety_manager.get_user_confirmation(warning, command)
 
                 if not confirmed:
@@ -345,14 +338,15 @@ class ToolExecutor:
                     }
 
         try:
-            # Use timeout from safety config if available
             timeout = 30
             if self.safety_manager and hasattr(self.safety_manager, "config"):
                 timeout = self.safety_manager.config.tool_timeout_seconds
 
+            # nosec B602: shell=True is required for bash command execution
+            # Commands are validated by SafetyManager before execution
             result = subprocess.run(
                 command,
-                shell=True,  # nosec B602 - CLI tool with intentional shell access
+                shell=True,  # nosec
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -391,7 +385,6 @@ def get_tools_prompt() -> str:
         tools_desc += f"### {tool['name']}\n"
         tools_desc += f"{tool['description']}\n\n"
 
-        # List parameters more clearly
         props = tool["parameters"].get("properties", {})
         required = tool["parameters"].get("required", [])
 

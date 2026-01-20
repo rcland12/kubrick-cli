@@ -1,5 +1,201 @@
 # Kubrick CLI Changelog
 
+## Version 0.1.3 (Unreleased)
+
+### Enhancements
+
+#### 1. Conversation Loading from File Paths
+
+- **Enhanced `--load` option**: Can now load conversations from arbitrary file paths, not just conversation IDs
+- **Flexible loading**:
+  - By ID: `kubrick --load 20240118_143022` (loads from `~/.kubrick/conversations/`)
+  - By path: `kubrick --load /path/to/conversation.json` (loads from anywhere)
+  - Supports relative paths: `kubrick --load ../saved/conv.json`
+  - Supports `~` expansion: `kubrick --load ~/backup/conversation.json`
+
+**Use Cases:**
+
+- Share conversations between machines
+- Load exported/backed-up conversations
+- Load conversations from custom locations
+- Integrate with version control (e.g., save conversations in project repos)
+
+**Example:**
+
+```bash
+# Export a conversation
+cp ~/.kubrick/conversations/20240118_143022.json ~/my-project/ai-session.json
+
+# Load it later from project directory
+kubrick --load ~/my-project/ai-session.json
+```
+
+#### 2. Improved Help Documentation
+
+- **Enhanced `/help` command**: Now shows all available in-session commands
+- **Added missing commands to help**:
+  - `/debug` - Show debug information (conversation ID, messages, provider, model)
+  - `/debug prompt` - Display the full system prompt
+  - `exit` / `quit` - Save and exit (was working but not documented)
+- **Clarified `--load` usage**: Added note explaining `--load` is a startup argument, not an in-session command
+- **Updated CLI `--help`**: Main help now includes all in-session commands
+- **Consistent documentation**: All help text now matches across `/help`, `--help`, and WIKI.md
+
+**Before:**
+
+```
+/help only showed: /save, /list, /config, /delete (missing /debug, exit/quit)
+```
+
+**After:**
+
+```
+/help shows: /save, /list, /load, /config, /delete, /debug, /debug prompt, /help, exit, quit
+```
+
+#### 3. In-Session Conversation Loading with Numbered Selection
+
+- **New `/load` in-session command**: Load conversations without restarting Kubrick
+- **Numbered selection**: `/list` now shows numbered conversations for easy loading
+- **Three loading modes**:
+  - By number: `/load 1` (loads conversation #1 from last `/list`)
+  - By ID: `/load 20240118_143022` (loads by conversation ID)
+  - By path: `/load /path/to/conversation.json` (loads from file path)
+
+**User Workflow:**
+
+```bash
+You: /list
+# Shows numbered table:
+# #  ID                Messages  Working Dir        Modified
+# 1  20240119_120000  15        /home/user/proj    2024-01-19 12:00
+# 2  20240118_143022  23        /home/user/proj    2024-01-18 14:30
+
+You: /load 1
+# ✓ Loaded conversation 20240119_120000 (15 messages)
+```
+
+**Benefits:**
+
+- No need to restart Kubrick to switch conversations
+- Simple numbered selection instead of copying long IDs
+- Seamless workflow: list → load by number
+- Still supports loading by ID or file path for flexibility
+
+**Updated Help:**
+
+- `/help` now shows `/load <#|ID>` command
+- `/list` displays hint: "Use '/load <#>' to load a conversation by number"
+- Main CLI help (`kubrick --help`) updated with `/load` command
+
+---
+
+## Version 0.1.2 - Testing Infrastructure & UTF-8 Fix
+
+### New Features
+
+#### 1. Comprehensive Test Suite
+
+- **100+ Unit Tests**: Added comprehensive pytest test suite with full mocking
+- **test_tool_executor.py**: 22 tests for file operations, bash commands, directory creation
+- **test_safety.py**: 32 tests for dangerous command detection and safety validation
+- **test_completion_detector.py**: 24 tests for agent loop completion logic
+- **test_triton_client_unit.py**: 22 tests for Triton client with mocked HTTP connections
+- **No External Dependencies**: All tests use mocking - no Triton server required
+- **Fast Execution**: All 102 tests run in ~0.6 seconds
+
+#### 2. CI/CD Integration
+
+- **GitHub Actions Workflow**: Automated testing on push and pull requests
+- **Multi-Python Testing**: Tests run on Python 3.8, 3.9, 3.10, 3.11, 3.12
+- **Multi-OS Testing**: Tests on Ubuntu, macOS, and Windows
+- **Code Coverage**: Automated coverage reporting with 49% overall coverage
+- **Code Quality**: Automated linting (flake8) and formatting checks (black)
+
+#### 3. Test Coverage Highlights
+
+- **100% coverage** - SafetyManager (security-critical component)
+- **95% coverage** - TritonLLMClient (including UTF-8 fix validation)
+- **92% coverage** - ToolExecutor (file operations and command execution)
+- **83% coverage** - TritonProvider
+- **79% coverage** - ProviderAdapter base class
+- **77% coverage** - KubrickConfig
+
+#### 4. Developer Tools
+
+- **pytest Integration**: Professional testing framework with fixtures and mocking
+- **pytest-cov**: Coverage reporting and analysis
+- **pytest-mock**: Enhanced mocking capabilities
+- **conftest.py**: Shared test fixtures and configuration
+- **TESTING.md**: Comprehensive testing documentation
+
+### Bug Fixes
+
+#### UTF-8 Decoding Error (Critical Fix)
+
+**Issue**: `'utf-8' codec can't decode bytes in position 1022-1023: unexpected end of data`
+
+**Root Cause**: TritonLLMClient was decoding 1024-byte chunks immediately, which could split multi-byte UTF-8 characters (emojis, special characters) in the middle.
+
+**Solution**:
+
+- Changed streaming logic to keep data as bytes until complete lines are received
+- Only decode complete lines (newlines are single-byte safe split points)
+- Added error handling for malformed data
+- Added comprehensive tests to validate UTF-8 handling, including split multi-byte characters
+
+**Impact**: Fixed streaming responses with emojis, international characters, and other multi-byte UTF-8 content.
+
+### Testing
+
+Run the test suite:
+
+```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=kubrick_cli --cov-report=term-missing
+
+# Run specific test file
+pytest tests/test_tool_executor.py -v
+```
+
+### Documentation
+
+- **TESTING.md**: Complete testing guide with examples
+- **Updated README.md**: Added Development section with testing instructions
+- **Test Coverage Reports**: Available in CI/CD pipeline
+
+### Development Improvements
+
+- Added flake8 to dev dependencies for code linting
+- Added pytest-mock for enhanced test mocking capabilities
+- Organized tests with clear class structure and fixtures
+- Added pytest markers for test categorization (unit, integration, slow)
+
+### Files Added
+
+- `tests/test_tool_executor.py` - ToolExecutor unit tests
+- `tests/test_safety.py` - SafetyManager unit tests
+- `tests/test_completion_detector.py` - CompletionDetector unit tests
+- `tests/test_triton_client_unit.py` - TritonLLMClient unit tests
+- `tests/conftest.py` - Shared pytest fixtures
+- `TESTING.md` - Testing documentation
+- `.github/workflows/test.yml` - CI/CD test workflow (optional, ci.yml already covers this)
+
+### Files Modified
+
+- `kubrick_cli/triton_client.py` - Fixed UTF-8 decoding bug in streaming
+- `pyproject.toml` - Added pytest-mock and flake8 dependencies
+- `pytest.ini` - Added test markers and configuration
+- `README.md` - Added Development and Testing sections
+
+---
+
 ## Version 0.1.1 - Tool Calling Robustness Update
 
 ### Improvements

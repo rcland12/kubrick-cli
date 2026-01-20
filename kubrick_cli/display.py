@@ -65,16 +65,12 @@ class DisplayManager:
         elif self.display_mode in ("json", "verbose"):
             self._display_json_result(tool_name, result, success)
 
-    def _display_natural_tool_call(
-        self, tool_name: str, parameters: Dict[str, Any]
-    ):
+    def _display_natural_tool_call(self, tool_name: str, parameters: Dict[str, Any]):
         """Display tool call in natural language."""
         description = self._get_natural_description(tool_name, parameters)
         console.print(f"[cyan]→ {description}[/cyan]")
 
-    def _display_json_tool_call(
-        self, tool_name: str, parameters: Dict[str, Any]
-    ):
+    def _display_json_tool_call(self, tool_name: str, parameters: Dict[str, Any]):
         """Display tool call as JSON panel."""
         tool_data = {"tool": tool_name, "parameters": parameters}
         json_str = json.dumps(tool_data, indent=2)
@@ -86,15 +82,12 @@ class DisplayManager:
     ):
         """Display result in natural language."""
         if success:
-            # Extract key information from result
             result_text = result.get("result", "")
 
-            # Truncate long results for display
             if len(result_text) > 200:
                 preview = result_text[:200] + "..."
-                console.print(
-                    f"[green]✓ {tool_name} succeeded[/green] [dim](output truncated)[/dim]"
-                )
+                console.print(f"[green]✓ {tool_name} succeeded[/green]")
+                console.print(f"[dim]{preview}[/dim]")
             else:
                 console.print(f"[green]✓ {tool_name} succeeded[/green]")
         else:
@@ -131,9 +124,7 @@ class DisplayManager:
         elif tool_name == "write_file":
             file_path = parameters.get("file_path", "unknown")
             content_length = len(parameters.get("content", ""))
-            return (
-                f"Writing {content_length} characters to {file_path}"
-            )
+            return f"Writing {content_length} characters to {file_path}"
 
         elif tool_name == "edit_file":
             file_path = parameters.get("file_path", "unknown")
@@ -151,7 +142,6 @@ class DisplayManager:
 
         elif tool_name == "run_bash":
             command = parameters.get("command", "")
-            # Truncate long commands
             if len(command) > 60:
                 command = command[:60] + "..."
             return f"Running bash command: {command}"
@@ -161,5 +151,4 @@ class DisplayManager:
             return f"Creating directory {path}"
 
         else:
-            # Fallback for unknown tools
             return f"Calling {tool_name}"

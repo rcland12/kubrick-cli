@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Configuration management for Kubrick CLI."""
 
 import json
@@ -23,10 +22,8 @@ class KubrickConfig:
         self.config_file = self.kubrick_dir / "config.json"
         self.conversations_dir = self.kubrick_dir / "conversations"
 
-        # Ensure directories exist
         self._ensure_directories()
 
-        # Load or create config (with optional setup wizard)
         self.config = self._load_config(skip_wizard=skip_wizard)
 
     def _ensure_directories(self):
@@ -49,29 +46,24 @@ class KubrickConfig:
                 with open(self.config_file, "r") as f:
                     loaded_config = json.load(f)
 
-                # Merge with defaults to ensure all keys exist
                 default_config = self._get_default_config()
                 default_config.update(loaded_config)
                 return default_config
 
             except (json.JSONDecodeError, IOError):
-                # If config is corrupted, start fresh
                 return self._get_default_config()
         else:
-            # First time setup - run wizard unless skipped
             if not skip_wizard:
                 from .setup_wizard import SetupWizard
 
                 wizard_config = SetupWizard.run()
 
-                # Merge wizard config with defaults
                 config = self._get_default_config()
                 config.update(wizard_config)
 
                 self._save_config(config)
                 return config
             else:
-                # Create default config without wizard
                 config = self._get_default_config()
                 self._save_config(config)
                 return config
@@ -105,7 +97,7 @@ class KubrickConfig:
             "tool_timeout_seconds": 30,
             "max_file_size_mb": 10,
             # Display settings
-            "display_mode": "natural",  # natural, json, verbose
+            "display_mode": "natural",
             "show_tool_results": True,
             "show_progress": True,
             # Task classification settings
@@ -156,20 +148,30 @@ class KubrickConfig:
         with open(conversation_file, "w") as f:
             json.dump(data, f, indent=2)
 
-        # Clean up old conversations if we exceed max
         self._cleanup_old_conversations()
 
     def load_conversation(self, conversation_id: str) -> Optional[Dict]:
         """
         Load a conversation from disk.
 
+        Supports two modes:
+        1. By ID: Loads from ~/.kubrick/conversations/<id>.json
+        2. By path: Loads from absolute or relative file path
+
         Args:
-            conversation_id: Unique identifier for the conversation
+            conversation_id: Conversation ID or file path
 
         Returns:
             Dictionary with 'id', 'messages', and 'metadata', or None if not found
         """
-        conversation_file = self.conversations_dir / f"{conversation_id}.json"
+        if (
+            "/" in conversation_id
+            or "\\" in conversation_id
+            or conversation_id.endswith(".json")
+        ):
+            conversation_file = Path(conversation_id).expanduser().resolve()
+        else:
+            conversation_file = self.conversations_dir / f"{conversation_id}.json"
 
         if not conversation_file.exists():
             return None
@@ -208,7 +210,6 @@ class KubrickConfig:
             except (json.JSONDecodeError, IOError):
                 continue
 
-        # Sort by modification time (newest first)
         conversations.sort(key=lambda x: x["modified"], reverse=True)
 
         if limit:
@@ -240,9 +241,7 @@ class KubrickConfig:
         conversations = list(self.conversations_dir.glob("*.json"))
 
         if len(conversations) > max_conversations:
-            # Sort by modification time (oldest first)
             conversations.sort(key=lambda x: x.stat().st_mtime)
 
-            # Delete oldest conversations
             for conv_file in conversations[: len(conversations) - max_conversations]:
                 conv_file.unlink()

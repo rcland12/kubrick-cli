@@ -70,19 +70,17 @@ data: {"type": "complete"}
 ```json
 {
   "text_output": "{\"type\": \"chunk\", \"content\": \"text\"}",
-  "outputs": [
-    {"data": ["{\"type\": \"chunk\", \"content\": \"text\"}"]}
-  ]
+  "outputs": [{ "data": ["{\"type\": \"chunk\", \"content\": \"text\"}"] }]
 }
 ```
 
 **Response Types:**
 
-| Type | Description | Required |
-|------|-------------|----------|
-| `chunk` | Text/token chunk during streaming | Yes |
-| `complete` | Marks end of stream | Yes |
-| `error` | Error occurred (content has error message) | Optional |
+| Type       | Description                                | Required |
+| ---------- | ------------------------------------------ | -------- |
+| `chunk`    | Text/token chunk during streaming          | Yes      |
+| `complete` | Marks end of stream                        | Yes      |
+| `error`    | Error occurred (content has error message) | Optional |
 
 **Example Stream:**
 
@@ -328,6 +326,7 @@ You: Say hello in one word
 **Problem:** Cannot connect to Triton server
 
 **Solutions:**
+
 - Check Triton is running: `curl http://localhost:8000/v2/health/live`
 - Verify port 8000 is open: `netstat -tuln | grep 8000`
 - Check firewall settings
@@ -337,6 +336,7 @@ You: Say hello in one word
 **Problem:** `Model llm_decoupled not found`
 
 **Solutions:**
+
 - Verify model is in repository: `ls /path/to/model_repository/llm_decoupled`
 - Check Triton logs for loading errors
 - Ensure `config.pbtxt` is valid
@@ -346,6 +346,7 @@ You: Say hello in one word
 **Problem:** No streaming responses or timeout
 
 **Solutions:**
+
 - Ensure `decoupled: True` in config.pbtxt
 - Check SSE headers: `Accept: text/event-stream`
 - Verify Python backend streams responses incrementally
@@ -356,6 +357,7 @@ You: Say hello in one word
 **Problem:** Kubrick can't parse responses
 
 **Solutions:**
+
 - Ensure responses are JSON: `{"type": "chunk", "content": "..."}`
 - Include `type` field in all responses
 - Send `{"type": "complete"}` to end stream
@@ -407,9 +409,11 @@ See the `/triton/repository/llm_decoupled/` directory in the Kubrick repository 
 ## Support
 
 For Triton-specific issues:
+
 - [Triton GitHub Issues](https://github.com/triton-inference-server/server/issues)
 - [Triton Forums](https://forums.developer.nvidia.com/c/ai/triton-inference-server/)
 
 For Kubrick integration issues:
+
 - [Kubrick GitHub Issues](https://github.com/yourusername/kubrick/issues)
 - See [WIKI.md](WIKI.md) for general troubleshooting

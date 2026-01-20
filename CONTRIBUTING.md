@@ -15,6 +15,7 @@ Thank you for considering contributing to Kubrick CLI! This document provides gu
 ## Code of Conduct
 
 This project follows the standard open source code of conduct:
+
 - Be respectful and inclusive
 - Welcome newcomers
 - Focus on constructive feedback
@@ -91,6 +92,7 @@ git commit -m "feat: add your feature description"
 ```
 
 Use conventional commits:
+
 - `feat:` - New feature
 - `fix:` - Bug fix
 - `docs:` - Documentation changes
@@ -134,6 +136,7 @@ This ensures the package works correctly before releasing to production PyPI.
 ### Pre-commit Checks
 
 The project uses pre-commit hooks that run automatically:
+
 - **Black**: Code formatting
 - **Flake8**: Style checking
 - **Bandit**: Security scanning
@@ -207,6 +210,7 @@ pytest -v
 2. **Update documentation**
 
 If you've added features or changed behavior, update:
+
 - README.md
 - Relevant docs in `docs/`
 - Docstrings in code
@@ -227,6 +231,7 @@ If you've added features or changed behavior, update:
 5. **Merge**
 
 Once approved:
+
 - Maintainer will squash and merge to staging
 - Delete your feature branch after merge
 
@@ -236,20 +241,24 @@ When creating a PR, include:
 
 ```markdown
 ## Description
+
 Brief description of changes
 
 ## Type of Change
+
 - [ ] Bug fix
 - [ ] New feature
 - [ ] Breaking change
 - [ ] Documentation update
 
 ## Testing
+
 - [ ] All tests pass locally
 - [ ] Added tests for new features
 - [ ] Updated relevant documentation
 
 ## Checklist
+
 - [ ] Code follows style guidelines
 - [ ] Self-review completed
 - [ ] Comments added for complex code
@@ -288,6 +297,7 @@ git push origin master
 ```
 
 **That's it!** The CD workflow automatically:
+
 - Detects the version change
 - Runs tests
 - Publishes to PyPI
@@ -337,6 +347,7 @@ kubrick-cli/
 ## Recognition
 
 Contributors will be recognized in:
+
 - README.md contributors section
 - Release notes
 - GitHub contributors page

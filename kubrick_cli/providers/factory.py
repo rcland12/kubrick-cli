@@ -33,41 +33,29 @@ class ProviderFactory:
         if cls._discovered:
             return
 
-        # Get the directory containing provider modules
         providers_dir = Path(__file__).parent
 
-        # Scan all Python files in the providers directory
         for module_info in pkgutil.iter_modules([str(providers_dir)]):
             module_name = module_info.name
 
-            # Skip special files
             if module_name in ("base", "factory", "__init__"):
                 continue
 
             try:
-                # Import the module
-                module = importlib.import_module(
-                    f"kubrick_cli.providers.{module_name}"
-                )
+                module = importlib.import_module(f"kubrick_cli.providers.{module_name}")
 
-                # Find all classes in the module
                 for name, obj in inspect.getmembers(module, inspect.isclass):
-                    # Check if it's a ProviderAdapter subclass (but not the base class)
                     if (
                         issubclass(obj, ProviderAdapter)
                         and obj is not ProviderAdapter
                         and hasattr(obj, "METADATA")
                         and obj.METADATA is not None
                     ):
-                        # Register the provider by its metadata name
                         provider_name = obj.METADATA.name.lower()
                         cls._provider_registry[provider_name] = obj
 
             except Exception as e:
-                # Log the error but continue discovering other providers
-                print(
-                    f"Warning: Failed to load provider from {module_name}: {e}"
-                )
+                print(f"Warning: Failed to load provider from {module_name}: {e}")
                 continue
 
         cls._discovered = True
@@ -86,7 +74,6 @@ class ProviderFactory:
         Raises:
             ValueError: If provider is invalid or required credentials are missing
         """
-        # Ensure providers are discovered
         cls._discover_providers()
 
         provider_name = config.get("provider", "triton").lower()
@@ -98,29 +85,22 @@ class ProviderFactory:
                 f"Available providers: {available}"
             )
 
-        # Get the provider class
         provider_class = cls._provider_registry[provider_name]
         metadata = provider_class.METADATA
 
-        # Extract configuration values needed for this provider
         provider_config = {}
         for field in metadata.config_fields:
             key = field["key"]
             value = config.get(key)
 
-            # Check for required fields (no default value)
             if value is None and "default" not in field:
                 raise ValueError(
                     f"{metadata.display_name} configuration missing required field: '{key}'. "
                     f"Please run setup wizard or add '{key}' to config."
                 )
 
-            # Use provided value or default
             provider_config[key] = value if value is not None else field.get("default")
 
-        # Instantiate the provider
-        # We need to map config keys to constructor parameters
-        # This is done by inspecting the __init__ signature
         init_signature = inspect.signature(provider_class.__init__)
         init_params = {}
 
@@ -128,10 +108,10 @@ class ProviderFactory:
             if param_name == "self":
                 continue
 
-            # Try to find a matching config field
             for field in metadata.config_fields:
-                # Match based on key name or parameter name
-                if field["key"] == param_name or field["key"].endswith(f"_{param_name}"):
+                if field["key"] == param_name or field["key"].endswith(
+                    f"_{param_name}"
+                ):
                     init_params[param_name] = provider_config[field["key"]]
                     break
 
@@ -152,9 +132,7 @@ class ProviderFactory:
             if provider_class.METADATA:
                 providers.append(provider_class.METADATA)
 
-        # Sort with Triton first (default), then others alphabetically
         def sort_key(p):
-            # Triton comes first (returns 0), others sorted alphabetically (returns name)
             return (0, "") if p.name == "triton" else (1, p.name)
 
         providers.sort(key=sort_key)

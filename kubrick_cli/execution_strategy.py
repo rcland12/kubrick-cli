@@ -30,7 +30,6 @@ class ExecutionStrategy:
     - Quality (best models for complex tasks)
     """
 
-    # Model tiers by provider
     MODEL_TIERS = {
         "openai": {
             "fast": "gpt-3.5-turbo",
@@ -38,13 +37,12 @@ class ExecutionStrategy:
             "best": "gpt-4",
         },
         "anthropic": {
-            "fast": "claude-haiku-4-5-20251001",  # 4-5x faster, 1/3 cost
-            "balanced": "claude-sonnet-4-5-20250929",  # Claude Sonnet 4.5 (best balance, workhorse)
-            "best": "claude-opus-4-1-20250805",  # Claude Opus 4.1 (most capable)
+            "fast": "claude-haiku-4-5-20251001",
+            "balanced": "claude-sonnet-4-5-20250929",
+            "best": "claude-opus-4-1-20250805",
         },
         "triton": {
-            # Triton uses same model for all tiers
-            "fast": None,  # Use configured model
+            "fast": None,
             "balanced": None,
             "best": None,
         },
