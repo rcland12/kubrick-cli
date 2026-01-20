@@ -38,9 +38,9 @@ class ExecutionStrategy:
             "best": "gpt-4",
         },
         "anthropic": {
-            "fast": "claude-3-haiku-20240307",
-            "balanced": "claude-3-5-sonnet-20240620",
-            "best": "claude-3-opus-20240229",
+            "fast": "claude-haiku-4-5-20251001",  # 4-5x faster, 1/3 cost
+            "balanced": "claude-sonnet-4-5-20250929",  # Claude Sonnet 4.5 (best balance, workhorse)
+            "best": "claude-opus-4-1-20250805",  # Claude Opus 4.1 (most capable)
         },
         "triton": {
             # Triton uses same model for all tiers
@@ -69,9 +69,7 @@ class ExecutionStrategy:
         """
         # Handle None classification (fallback to simple)
         if classification is None:
-            return ExecutionStrategy._simple_config(
-                provider_name, default_model
-            )
+            return ExecutionStrategy._simple_config(provider_name, default_model)
 
         complexity = classification.complexity
 
@@ -80,18 +78,12 @@ class ExecutionStrategy:
                 provider_name, default_model
             )
         elif complexity == "SIMPLE":
-            return ExecutionStrategy._simple_config(
-                provider_name, default_model
-            )
+            return ExecutionStrategy._simple_config(provider_name, default_model)
         elif complexity == "COMPLEX":
-            return ExecutionStrategy._complex_config(
-                provider_name, default_model
-            )
+            return ExecutionStrategy._complex_config(provider_name, default_model)
         else:
             # Fallback to simple
-            return ExecutionStrategy._simple_config(
-                provider_name, default_model
-            )
+            return ExecutionStrategy._simple_config(provider_name, default_model)
 
     @staticmethod
     def _conversational_config(
@@ -127,9 +119,7 @@ class ExecutionStrategy:
         )
 
     @staticmethod
-    def _simple_config(
-        provider_name: str, default_model: str
-    ) -> ExecutionConfig:
+    def _simple_config(provider_name: str, default_model: str) -> ExecutionConfig:
         """
         Configuration for simple tasks.
 
@@ -159,9 +149,7 @@ class ExecutionStrategy:
         )
 
     @staticmethod
-    def _complex_config(
-        provider_name: str, default_model: str
-    ) -> ExecutionConfig:
+    def _complex_config(provider_name: str, default_model: str) -> ExecutionConfig:
         """
         Configuration for complex tasks.
 
@@ -191,9 +179,7 @@ class ExecutionStrategy:
         )
 
     @staticmethod
-    def get_model_for_tier(
-        provider_name: str, tier: str, default_model: str
-    ) -> str:
+    def get_model_for_tier(provider_name: str, tier: str, default_model: str) -> str:
         """
         Get model name for a specific tier.
 

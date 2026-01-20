@@ -14,7 +14,7 @@ class AnthropicProvider(ProviderAdapter):
     METADATA = ProviderMetadata(
         name="anthropic",
         display_name="Anthropic",
-        description="Anthropic API (Claude 3.5 Sonnet, etc.)",
+        description="Anthropic API (Claude Sonnet 4.5, etc.)",
         config_fields=[
             {
                 "key": "anthropic_api_key",
@@ -26,12 +26,16 @@ class AnthropicProvider(ProviderAdapter):
                 "key": "anthropic_model",
                 "label": "Model name",
                 "type": "text",
-                "default": "claude-3-5-sonnet-20241022",
+                "default": "claude-sonnet-4-5-20250929",
             },
         ],
     )
 
-    def __init__(self, anthropic_api_key: str, anthropic_model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(
+        self,
+        anthropic_api_key: str,
+        anthropic_model: str = "claude-sonnet-4-5-20250929",
+    ):
         """
         Initialize Anthropic provider.
 

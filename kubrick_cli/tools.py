@@ -1,11 +1,8 @@
 """Tool definitions and execution handlers."""
 
-import glob
-import json
-import os
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 TOOL_DEFINITIONS = [
     {
@@ -26,7 +23,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "write_file",
-        "description": "Write content to a file, creating it if it doesn't exist or overwriting if it does",
+        "description": "Write content to a file (creates or overwrites)",
         "read_only": False,
         "estimated_duration": 2,
         "parameters": {
@@ -70,7 +67,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "list_files",
-        "description": "List files and directories matching a glob pattern (e.g., '*.py' for current dir, '**/*.py' for recursive, '**/*' for all)",
+        "description": "List files matching a glob pattern (*.py, **/*.py, etc)",
         "read_only": True,
         "estimated_duration": 1,
         "parameters": {
@@ -168,9 +165,7 @@ class ToolExecutor:
             return p
         return (self.working_dir / p).resolve()
 
-    def execute(
-        self, tool_name: str, parameters: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def execute(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a tool with given parameters.
 
@@ -317,9 +312,7 @@ class ToolExecutor:
                 for line_num, line in enumerate(lines, 1):
                     if pattern in line:
                         rel_path = file_path.relative_to(search_dir)
-                        results.append(
-                            f"{rel_path}:{line_num}: {line.strip()}"
-                        )
+                        results.append(f"{rel_path}:{line_num}: {line.strip()}")
             except (UnicodeDecodeError, PermissionError):
                 # Skip binary files or files we can't read
                 continue
@@ -327,9 +320,7 @@ class ToolExecutor:
         if not results:
             result = f"No matches found for pattern: {pattern}"
         else:
-            result = f"Found {len(results)} matches:\n" + "\n".join(
-                results[:50]
-            )
+            result = f"Found {len(results)} matches:\n" + "\n".join(results[:50])
             if len(results) > 50:
                 result += f"\n... and {len(results) - 50} more"
 
@@ -341,15 +332,11 @@ class ToolExecutor:
 
         # Safety check: validate command with SafetyManager
         if self.safety_manager:
-            is_safe, warning = self.safety_manager.validate_bash_command(
-                command
-            )
+            is_safe, warning = self.safety_manager.validate_bash_command(command)
 
             if not is_safe:
                 # Request user confirmation for dangerous command
-                confirmed = self.safety_manager.get_user_confirmation(
-                    warning, command
-                )
+                confirmed = self.safety_manager.get_user_confirmation(warning, command)
 
                 if not confirmed:
                     return {
@@ -360,15 +347,12 @@ class ToolExecutor:
         try:
             # Use timeout from safety config if available
             timeout = 30
-            if (
-                self.safety_manager
-                and hasattr(self.safety_manager, "config")
-            ):
+            if self.safety_manager and hasattr(self.safety_manager, "config"):
                 timeout = self.safety_manager.config.tool_timeout_seconds
 
             result = subprocess.run(
                 command,
-                shell=True,
+                shell=True,  # nosec B602 - CLI tool with intentional shell access
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -414,9 +398,7 @@ def get_tools_prompt() -> str:
         if props:
             tools_desc += "**Parameters:**\n"
             for param_name, param_info in props.items():
-                req_marker = (
-                    " (required)" if param_name in required else " (optional)"
-                )
+                req_marker = " (required)" if param_name in required else " (optional)"
                 param_desc = param_info.get("description", "No description")
                 tools_desc += f"- `{param_name}`: {param_desc}{req_marker}\n"
 
