@@ -130,9 +130,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            UID=1000
-            GID=1000
           cache-from: type=registry,ref=${{ env.DOCKERHUB_IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.DOCKERHUB_IMAGE }}:buildcache,mode=max
 

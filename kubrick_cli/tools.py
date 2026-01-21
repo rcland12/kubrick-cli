@@ -4,6 +4,35 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
+# Directories to always exclude from list_files and search_files
+# These are typically large, irrelevant, or auto-generated
+EXCLUDED_DIRECTORIES = {
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "venv",
+    "env",
+    ".env",
+    "build",
+    "dist",
+    ".next",
+    ".nuxt",
+    "target",  # Rust/Java builds
+    ".gradle",
+    ".idea",
+    ".vscode",
+    ".DS_Store",
+    "*.egg-info",
+    ".terraform",
+}
+
 TOOL_DEFINITIONS = [
     {
         "name": "read_file",
@@ -23,7 +52,11 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "write_file",
-        "description": "Write content to a file (creates or overwrites)",
+        "description": (
+            "Write content to a file (creates or overwrites). "
+            "After writing Python scripts, immediately run them with run_bash. "
+            "After creating files, verify with list_files or read_file."
+        ),
         "read_only": False,
         "estimated_duration": 2,
         "parameters": {
@@ -43,7 +76,11 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "edit_file",
-        "description": "Edit a file by replacing a specific string with new content",
+        "description": (
+            "Edit a file by replacing a specific string with new content. "
+            "Must read the file first to see current contents. "
+            "After editing, verify changes if needed."
+        ),
         "read_only": False,
         "estimated_duration": 2,
         "parameters": {
@@ -67,7 +104,12 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "list_files",
-        "description": "List files matching a glob pattern (*.py, **/*.py, etc)",
+        "description": (
+            "List files matching a glob pattern. "
+            "Automatically excludes .git, node_modules, and other common directories. "
+            "Use specific patterns (e.g., 'src/**/*.py') instead of broad patterns "
+            "(e.g., '**/*'). Limited to 500 files."
+        ),
         "read_only": True,
         "estimated_duration": 1,
         "parameters": {
@@ -75,7 +117,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Glob pattern to match files (e.g., '*.py', 'src/**/*.ts')",
+                    "description": (
+                        "Glob pattern to match files (e.g., '*.py', 'src/**/*.ts'). "
+                        "Use SPECIFIC patterns, not '**/*'"
+                    ),
                 },
                 "directory": {
                     "type": "string",
@@ -111,7 +156,11 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "run_bash",
-        "description": "Execute a bash command and return its output",
+        "description": (
+            "Execute a bash command and return its output. "
+            "ALWAYS use this to run Python scripts after creating them (e.g., 'python script.py'). "
+            "Use for testing, verification, and execution."
+        ),
         "read_only": False,
         "estimated_duration": 5,
         "parameters": {
@@ -147,16 +196,23 @@ TOOL_DEFINITIONS = [
 class ToolExecutor:
     """Handles execution of tools."""
 
-    def __init__(self, working_dir: str = None, safety_manager=None):
+    def __init__(
+        self,
+        working_dir: str = None,
+        safety_manager=None,
+        max_list_files: int = 500,
+    ):
         """
         Initialize tool executor.
 
         Args:
             working_dir: Working directory for file operations (defaults to current directory)
             safety_manager: Optional SafetyManager for validation
+            max_list_files: Maximum number of files to return from list_files (default: 500)
         """
         self.working_dir = Path(working_dir) if working_dir else Path.cwd()
         self.safety_manager = safety_manager
+        self.max_list_files = max_list_files
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve a path relative to working directory."""
@@ -164,6 +220,26 @@ class ToolExecutor:
         if p.is_absolute():
             return p
         return (self.working_dir / p).resolve()
+
+    def _should_exclude_path(self, path: Path) -> bool:
+        """
+        Check if a path should be excluded from listing/searching.
+
+        Args:
+            path: Path to check
+
+        Returns:
+            True if path should be excluded
+        """
+        # Check each part of the path
+        for part in path.parts:
+            if part in EXCLUDED_DIRECTORIES:
+                return True
+            # Handle glob patterns like *.egg-info
+            for excluded in EXCLUDED_DIRECTORIES:
+                if "*" in excluded and part.endswith(excluded.replace("*", "")):
+                    return True
+        return False
 
     def execute(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -254,52 +330,110 @@ class ToolExecutor:
         }
 
     def _list_files(self, params: Dict) -> Dict:
-        """List files matching a pattern."""
+        """
+        List files matching a pattern with intelligent filtering.
+
+        Automatically excludes common directories like .git, node_modules, etc.
+        Limits results to prevent context overflow.
+        """
         pattern = params["pattern"]
         directory = params.get("directory", ".")
         search_dir = self._resolve_path(directory)
 
         files = []
         directories = []
+        excluded_count = 0
 
         for match in search_dir.glob(pattern):
-            rel_path = match.relative_to(search_dir)
-            if match.is_file():
-                files.append(str(rel_path))
-            elif match.is_dir():
-                directories.append(str(rel_path) + "/")
+            # Skip excluded paths (e.g., .git, node_modules)
+            if self._should_exclude_path(match):
+                excluded_count += 1
+                continue
+
+            try:
+                rel_path = match.relative_to(search_dir)
+                if match.is_file():
+                    files.append(str(rel_path))
+                elif match.is_dir():
+                    directories.append(str(rel_path) + "/")
+            except (ValueError, OSError):
+                # Skip paths that can't be processed
+                continue
+
+            # Check if we've hit the limit
+            total_items = len(files) + len(directories)
+            if total_items >= self.max_list_files:
+                break
 
         files.sort()
         directories.sort()
 
-        matches = directories + files
+        # Check if we hit the limit
+        total_found = len(files) + len(directories)
+        hit_limit = total_found >= self.max_list_files
 
-        if not matches:
-            result = f"No files or directories found matching pattern: {pattern}"
+        if not files and not directories:
+            if excluded_count > 0:
+                result = (
+                    f"No files or directories found matching pattern: {pattern}\n"
+                    f"(Excluded {excluded_count} items from .git, node_modules, etc.)"
+                )
+            else:
+                result = f"No files or directories found matching pattern: {pattern}"
         else:
             dir_count = len(directories)
             file_count = len(files)
-            result = f"Found {dir_count} directories and {file_count} files:\n"
+
+            result = f"Found {dir_count} directories and {file_count} files"
+
+            if excluded_count > 0:
+                result += f" (excluded {excluded_count} from .git, node_modules, etc.)"
+
+            if hit_limit:
+                result += f"\n⚠️  LIMIT REACHED: Showing first {self.max_list_files} items only."
+                result += "\n💡 Use more specific patterns (e.g., 'src/**/*.py' instead of '**/*')"
+
+            result += ":\n"
 
             if directories:
-                result += "\nDirectories:\n" + "\n".join(directories)
+                show_dirs = directories[: min(50, len(directories))]
+                result += "\nDirectories:\n" + "\n".join(show_dirs)
+                if len(directories) > 50:
+                    result += f"\n... and {len(directories) - 50} more directories"
+
             if files:
-                result += "\n\nFiles:\n" + "\n".join(files)
+                show_files = files[: min(100, len(files))]
+                result += "\n\nFiles:\n" + "\n".join(show_files)
+                if len(files) > 100:
+                    result += f"\n... and {len(files) - 100} more files"
 
         return {"success": True, "result": result}
 
     def _search_files(self, params: Dict) -> Dict:
-        """Search for text in files."""
+        """
+        Search for text in files with intelligent filtering.
+
+        Automatically excludes common directories like .git, node_modules, etc.
+        """
         pattern = params["pattern"]
         file_pattern = params.get("file_pattern", "**/*")
         directory = params.get("directory", ".")
         search_dir = self._resolve_path(directory)
 
         results = []
+        files_searched = 0
+        files_excluded = 0
 
         for file_path in search_dir.glob(file_pattern):
             if not file_path.is_file():
                 continue
+
+            # Skip excluded paths
+            if self._should_exclude_path(file_path):
+                files_excluded += 1
+                continue
+
+            files_searched += 1
 
             try:
                 content = file_path.read_text()
@@ -314,8 +448,16 @@ class ToolExecutor:
 
         if not results:
             result = f"No matches found for pattern: {pattern}"
+            if files_excluded > 0:
+                result += (
+                    f"\n(Searched {files_searched} files, excluded {files_excluded} "
+                    "from .git, node_modules, etc.)"
+                )
         else:
-            result = f"Found {len(results)} matches:\n" + "\n".join(results[:50])
+            result = f"Found {len(results)} matches in {files_searched} files"
+            if files_excluded > 0:
+                result += f" (excluded {files_excluded})"
+            result += ":\n" + "\n".join(results[:50])
             if len(results) > 50:
                 result += f"\n... and {len(results) - 50} more"
 

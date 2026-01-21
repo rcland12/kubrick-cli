@@ -13,7 +13,63 @@ kubrick
 
 ### Docker
 
-Available from Docker Hub or GitHub Container Registry:
+#### Understanding Docker File Permissions
+
+**CRITICAL:** When using Docker, Kubrick creates files in your project. Without proper configuration, these files will be owned by root, causing permission issues.
+
+**The Solution:**
+- **Option 1 (Recommended):** Use the `kubrick-docker` wrapper - handles permissions automatically
+- **Option 2:** Use Docker Compose with exported UID/GID environment variables
+- **Option 3:** Include `--user $(id -u):$(id -g)` in every Docker command
+
+#### Quick Install (Recommended)
+
+Install the `kubrick-docker` wrapper for easy usage:
+
+```bash
+# Install from GitHub (installs to ~/.local/bin/kubrick-docker)
+curl -fsSL https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/install-kubrick-docker.sh | sh
+
+# Add to PATH if needed (add to ~/.bashrc or ~/.zshrc)
+export PATH="$HOME/.local/bin:$PATH"
+
+# Run from any project directory
+cd /path/to/your/project
+kubrick-docker
+```
+
+**Benefits:**
+- ✅ Automatically handles UID/GID (no configuration needed)
+- ✅ Smart image fallback (Docker Hub → GHCR → Local build)
+- ✅ Simple command from any directory
+- ✅ Files always owned by you, never root
+
+**Uninstall:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/uninstall-kubrick-docker.sh | sh
+```
+
+#### Docker Compose
+
+Use Docker Compose for a convenient alias-style workflow.
+
+**Setup (Required):** Export UID/GID in your shell config (`~/.bashrc` or `~/.zshrc`):
+
+```bash
+export UID=$(id -u)
+export GID=$(id -g)
+```
+
+**Usage:**
+
+```bash
+cd /path/to/your/project
+docker compose -f /path/to/kubrick-cli/docker-compose.yaml run --rm kubrick
+```
+
+#### Manual Docker Commands
+
+**IMPORTANT:** Always include `--user $(id -u):$(id -g)` to avoid file permission issues!
 
 ```bash
 cd /path/to/your/project
@@ -21,6 +77,7 @@ cd /path/to/your/project
 # From Docker Hub
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -30,12 +87,20 @@ docker run --rm -it \
 # From GitHub Container Registry
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
   ghcr.io/rcland12/kubrick-cli
 ```
+
+**Why `--user` is required:**
+- Without it, Docker runs as root and creates root-owned files
+- With it, files are owned by you and compatible with pip installation
+- The container uses `chmod 1777` on directories (same as VS Code Dev Containers)
+
+See **[DOCKER.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/DOCKER.md)** for detailed Docker usage, UID/GID configuration, and troubleshooting.
 
 ## Quick Start
 

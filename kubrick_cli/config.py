@@ -1,6 +1,7 @@
 """Configuration management for Kubrick CLI."""
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -18,7 +19,12 @@ class KubrickConfig:
         # Use ~/.kubrick in all environments (Docker and non-Docker)
         # In Docker, this resolves to /home/kubrick/.kubrick
         # Outside Docker, this resolves to the current user's home directory
-        self.kubrick_dir = Path.home() / ".kubrick"
+        home_env = os.environ.get("HOME")
+        if home_env:
+            self.kubrick_dir = Path(home_env).expanduser() / ".kubrick"
+        else:
+            self.kubrick_dir = Path.home() / ".kubrick"
+
         self.config_file = self.kubrick_dir / "config.json"
         self.conversations_dir = self.kubrick_dir / "conversations"
 
@@ -106,6 +112,25 @@ class KubrickConfig:
             # Conversation settings
             "auto_save_conversations": True,
             "max_conversations": 100,
+            # Context Management Settings
+            "enable_context_management": True,
+            "context_usage_threshold": 0.75,  # Start trimming at 75%
+            "context_summarization_threshold": 0.85,  # Summarize at 85%
+            "min_messages_to_keep": 4,  # Always preserve last 4 messages
+            "max_tool_result_chars": 10000,  # 10K chars per tool result
+            # Model-specific context windows (tokens)
+            "context_windows": {
+                "gpt-4": 8192,
+                "gpt-4-32k": 32768,
+                "gpt-4-turbo": 128000,
+                "gpt-4o": 128000,
+                "gpt-3.5-turbo": 16385,
+                "claude-sonnet-4-5-20250929": 200000,
+                "claude-opus-4-1-20250805": 200000,
+                "claude-haiku-4-5-20251001": 200000,
+                "llm_decoupled": 8192,  # Triton default (conservative)
+            },
+            "default_context_window": 8192,  # Fallback for unknown models
         }
 
     def _save_config(self, config: Dict[str, Any]):
