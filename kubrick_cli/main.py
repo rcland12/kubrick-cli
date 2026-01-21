@@ -85,6 +85,21 @@ class KubrickCLI:
         max_tools_per_turn = config.get("max_tools_per_turn", 5)
         timeout_seconds = config.get("total_timeout_seconds", 600)
 
+        # Initialize context manager if enabled
+        self.context_manager = None
+        if config.get("enable_context_management", True):
+            from .context_manager import ContextManager
+
+            self.context_manager = ContextManager(
+                provider_name=self.provider.provider_name,
+                model_name=self.provider.model_name,
+                config=config.get_all(),
+            )
+            console.print(
+                f"[dim]→ Context management enabled "
+                f"(limit: {self.context_manager.context_window} tokens)[/dim]"
+            )
+
         self.agent_loop = AgentLoop(
             llm_client=self.provider,
             tool_executor=self.tool_executor,
@@ -94,6 +109,7 @@ class KubrickCLI:
             stream_options={},
             display_manager=self.display_manager,
             tool_scheduler=self.tool_scheduler,
+            context_manager=self.context_manager,
         )
 
         self.classifier = TaskClassifier(self.provider)
@@ -167,18 +183,31 @@ When you've completed the task, say "TASK_COMPLETE" followed by a summary of wha
 
 # How to Explore Directories
 
-To explore the full codebase structure:
-- Use `list_files` with pattern `**/*.py` to list all Python files recursively
-- Use `list_files` with pattern `**/*` to see ALL files and directories
-- Use `run_bash` with `find . -type f` to list all files
-- Use `run_bash` with `tree` or `ls -R` to see directory structure
+⚠️ IMPORTANT: `list_files` automatically excludes .git, node_modules, __pycache__, \
+and other common directories.
 
-Example - list all Python files:
+Best practices:
+- ✅ Use SPECIFIC patterns: `src/**/*.py`, `*.js`, `tests/**/*.test.ts`
+- ❌ AVOID broad patterns: `**/*` (will hit 500 file limit)
+- ✅ Start narrow, then expand if needed
+
+The tool is limited to 500 files to prevent context overflow.
+
+Examples:
 ```tool_call
 {{
   "tool": "list_files",
   "parameters": {{
-    "pattern": "**/*.py"
+    "pattern": "src/**/*.py"
+  }}
+}}
+```
+
+```tool_call
+{{
+  "tool": "list_files",
+  "parameters": {{
+    "pattern": "*.js"
   }}
 }}
 ```
@@ -188,12 +217,30 @@ Example - list all Python files:
 1. **ITERATE**: Call tools immediately when needed, then analyze results and continue iterating
 2. **MULTIPLE TOOLS**: You can call multiple tools per response
 3. **READ BEFORE EDIT**: Always read a file before editing it
-4. **EXPLORE THOROUGHLY**: Use `**/*` patterns to see all files in subdirectories
-5. **SIGNAL COMPLETION**: Say "TASK_COMPLETE" when the task is done
-6. **USE TOOLS IMMEDIATELY**: Don't ask permission - just call the tool
+4. **SIGNAL COMPLETION**: Say "TASK_COMPLETE" when the task is done
+5. **USE TOOLS IMMEDIATELY**: Don't ask permission - just call the tool
+6. **ALWAYS RUN CODE YOU WRITE**: After writing a Python script, \
+immediately execute it with run_bash
+7. **ALWAYS VERIFY FILE OPERATIONS**: After writing a file, read it back or list it to confirm
+8. **NEVER JUST DESCRIBE**: If you write code, RUN it. If you create a file, VERIFY it exists
+
+## Critical: What NOT To Do
+
+❌ **DON'T** write a Python script and then just explain what it does
+✅ **DO** write the script AND run it immediately
+
+❌ **DON'T** say "The file has been created" without actually creating it
+✅ **DO** use write_file tool, then verify with read_file or list_files
+
+❌ **DON'TASK** the user "Should I run this?" after writing code
+✅ **DO** run it immediately - that's what they asked for
+
+❌ **DON'T** print file contents as output instead of writing them
+✅ **DO** use write_file tool to actually create the file
 
 # Examples
 
+## Example 1: Read a file (simple)
 User: "Read the config.pbtxt file"
 Assistant: I'll read that file for you.
 
@@ -206,22 +253,34 @@ Assistant: I'll read that file for you.
 }}
 ```
 
-User: "Create a new Python script called test.py with a hello world function"
-Assistant: I'll create that file for you.
+## Example 2: Write AND RUN code (critical!)
+User: "Create a Python script that prints the current date"
+Assistant: I'll create and run the script.
 
 ```tool_call
 {{
   "tool": "write_file",
   "parameters": {{
-    "file_path": "test.py",
-    "content": "def hello_world():\\n    \
-print('Hello, World!')\\n\\nif __name__ == '__main__':\\n    hello_world()\\n"
+    "file_path": "print_date.py",
+    "content": "from datetime import datetime\\nprint(f'Current date: {{datetime.now()}}')\\n"
   }}
 }}
 ```
 
+```tool_call
+{{
+  "tool": "run_bash",
+  "parameters": {{
+    "command": "python print_date.py"
+  }}
+}}
+```
+
+[Shows both write AND execute - no asking permission!]
+
+## Example 3: Multi-step iteration
 User: "Read main.py and add logging to all functions"
-Assistant: I'll first read the file to understand its structure.
+Assistant: I'll read the file first.
 
 ```tool_call
 {{
@@ -232,8 +291,48 @@ Assistant: I'll first read the file to understand its structure.
 }}
 ```
 
-[After seeing the results, I'll add logging and continue iterating until done, \
-then say TASK_COMPLETE]
+[Tool returns main.py contents showing function foo()...]
+
+Assistant continues: Now I'll edit the file to add logging.
+
+```tool_call
+{{
+  "tool": "edit_file",
+  "parameters": {{
+    "file_path": "main.py",
+    "old_string": "def foo():\\n    return 42",
+    "new_string": "import logging\\n\\ndef foo():\\n    \
+logging.info('foo() called')\\n    return 42"
+  }}
+}}
+```
+
+TASK_COMPLETE: Added logging to all functions in main.py.
+
+## Example 4: Write file and verify (important!)
+User: "Create a README.md file with project info"
+Assistant: I'll create the README and verify it was written.
+
+```tool_call
+{{
+  "tool": "write_file",
+  "parameters": {{
+    "file_path": "README.md",
+    "content": "# My Project\\n\\nThis is my awesome project.\\n"
+  }}
+}}
+```
+
+```tool_call
+{{
+  "tool": "list_files",
+  "parameters": {{
+    "pattern": "README.md"
+  }}
+}}
+```
+
+[Verifies file exists - proper workflow!]
 """,
             }
         ]
@@ -397,6 +496,18 @@ then say TASK_COMPLETE]
         Args:
             exec_config: Execution configuration
         """
+        # Check and manage context before LLM call
+        if self.context_manager:
+            self.messages, context_info = self.context_manager.check_and_manage(
+                self.messages
+            )
+            if context_info.get("action_taken"):
+                console.print(
+                    f"[yellow]→ Context managed: {context_info['action_taken']} "
+                    f"({context_info['tokens_before']} → "
+                    f"{context_info['tokens_after']} tokens)[/yellow]"
+                )
+
         console.print("[bold cyan]Assistant:[/bold cyan]")
         chunks = []
 
@@ -450,6 +561,18 @@ then say TASK_COMPLETE]
                             "content": f"Plan modifications: {approval['modifications']}",
                         }
                     )
+
+        # Check and manage context before agent loop
+        if self.context_manager:
+            self.messages, context_info = self.context_manager.check_and_manage(
+                self.messages
+            )
+            if context_info.get("action_taken"):
+                console.print(
+                    f"[yellow]→ Context managed: {context_info['action_taken']} "
+                    f"({context_info['tokens_before']} → "
+                    f"{context_info['tokens_after']} tokens)[/yellow]"
+                )
 
         original_max_iterations = self.agent_loop.max_iterations
         self.agent_loop.max_iterations = exec_config.max_iterations
@@ -676,6 +799,61 @@ then say TASK_COMPLETE]
                 f"[green]Loaded conversation {conversation['id']} ({msg_count} messages)[/green]"
             )
 
+        elif cmd == "/context":
+            if not self.context_manager:
+                console.print("[yellow]Context management is disabled[/yellow]")
+                console.print(
+                    "[dim]Enable it with: /config enable_context_management true[/dim]"
+                )
+                return
+
+            tokens = self.context_manager.token_counter.count_messages_tokens(
+                self.messages, self.provider.provider_name
+            )
+
+            usage_percent = (
+                (tokens / self.context_manager.context_window) * 100
+                if self.context_manager.context_window > 0
+                else 0
+            )
+
+            table = Table(title="Context Window Status")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="green")
+
+            table.add_row("Current Tokens", str(tokens))
+            table.add_row("Context Window", str(self.context_manager.context_window))
+            table.add_row("Usage", f"{usage_percent:.1f}%")
+            table.add_row("Messages", str(len(self.messages)))
+            table.add_row(
+                "Trim Threshold",
+                f"{self.context_manager.usage_threshold * 100:.0f}%",
+            )
+            table.add_row(
+                "Summarize Threshold",
+                f"{self.context_manager.summarization_threshold * 100:.0f}%",
+            )
+            table.add_row(
+                "Min Messages to Keep",
+                str(self.context_manager.min_messages_to_keep),
+            )
+
+            console.print(table)
+
+            # Show status indicator
+            if usage_percent >= self.context_manager.summarization_threshold * 100:
+                console.print(
+                    "\n[red]⚠ Context critically high - "
+                    "summarization will be triggered on next turn[/red]"
+                )
+            elif usage_percent >= self.context_manager.usage_threshold * 100:
+                console.print(
+                    "\n[yellow]⚠ Context high - "
+                    "trimming will be triggered on next turn[/yellow]"
+                )
+            else:
+                console.print("\n[green]✓ Context usage healthy[/green]")
+
         elif cmd == "/debug":
             table = Table(title="Debug Information")
             table.add_column("Item", style="cyan")
@@ -710,6 +888,7 @@ then say TASK_COMPLETE]
 [green]/config[/green]            - Show current configuration
 [green]/config KEY VALUE[/green]  - Set a configuration value
 [green]/delete ID[/green]         - Delete a conversation
+[green]/context[/green]           - Show context window usage and status
 [green]/debug[/green]             - Show debug information
 [green]/debug prompt[/green]      - Show the system prompt
 [green]/help[/green]              - Show this help message
@@ -727,7 +906,7 @@ then [cyan]/load 1[/cyan] to load by number
             console.print(f"[yellow]Unknown command: {cmd}[/yellow]")
             console.print(
                 "[dim]Available commands: "
-                "/save, /list, /load, /config, /delete, /debug, /help, exit, quit[/dim]"
+                "/save, /list, /load, /config, /delete, /context, /debug, /help, exit, quit[/dim]"
             )
 
 

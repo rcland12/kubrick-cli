@@ -11,9 +11,144 @@ Kubrick CLI Docker images are available from two registries:
 
 Both registries have identical images. Choose whichever you prefer!
 
+## Understanding File Permissions
+
+**IMPORTANT:** Kubrick needs to create and modify files in your project directory. To avoid permission issues, the container must run with your user ID and group ID (UID/GID).
+
+### Why UID/GID Matters
+
+When Docker creates files, they're owned by the user running inside the container. If the container runs as root (UID 0), all created files will be owned by root on your host system, making them difficult to edit or delete without `sudo`.
+
+**The Solution:** Run the container with your host UID/GID using the `--user` flag. This ensures:
+- Files created by Kubrick are owned by you
+- No permission errors when editing files
+- Compatibility between pip and Docker installations
+- No need for `sudo` to clean up files
+
+### Automatic vs Manual UID/GID
+
+**Option 1: Use `kubrick-docker` wrapper (Automatic)**
+The wrapper automatically detects and uses your UID/GID. No manual configuration needed.
+
+```bash
+kubrick-docker  # Handles UID/GID automatically
+```
+
+**Option 2: Docker Compose (Semi-Automatic)**
+Export `UID` and `GID` environment variables once (add to `~/.bashrc` or `~/.zshrc`):
+
+```bash
+export UID=$(id -u)
+export GID=$(id -g)
+```
+
+Then Docker Compose uses them automatically.
+
+**Option 3: Manual Docker Commands (Manual)**
+You must pass `--user $(id -u):$(id -g)` with every command.
+
+### Technical Details
+
+The Kubrick Docker image is designed to work with any UID/GID:
+- `/workspace` and `/home/kubrick` have `chmod 1777` (world-writable with sticky bit)
+- The container runs as the specified user at runtime
+- This is the same approach used by VS Code Dev Containers and GitLab CI
+
+## Installation Methods
+
+### Option 1: Install Wrapper Script (Recommended)
+
+The easiest way to use Kubrick with Docker is to install the `kubrick-docker` wrapper script. This creates a convenient command that handles all Docker flags automatically.
+
+#### Quick Install
+
+```bash
+# Install from GitHub
+curl -fsSL https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/install-kubrick-docker.sh | sh
+
+# Or download and run locally
+wget https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/install-kubrick-docker.sh
+sh install-kubrick-docker.sh
+```
+
+#### What It Does
+
+- Installs `kubrick-docker` wrapper to `~/.local/bin/`
+- Creates a smart launcher with automatic image fallback:
+  1. Tries Docker Hub: `rcland12/kubrick-cli:latest`
+  2. Falls back to GHCR: `ghcr.io/rcland12/kubrick-cli:latest`
+  3. Optionally builds locally if configured
+- Handles all volume mounts and permissions automatically
+- Uses your UID/GID to avoid permission issues
+- Works from any directory
+
+#### Add to PATH
+
+If `~/.local/bin` is not on your PATH:
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export PATH="$HOME/.local/bin:$PATH"
+
+# Reload shell
+source ~/.bashrc  # or source ~/.zshrc
+```
+
+#### Usage
+
+```bash
+# Run from any project directory
+cd /path/to/your/project
+kubrick-docker
+
+# With arguments
+kubrick-docker --triton-url my-server:8000
+kubrick-docker --load 20240118_143022
+```
+
+#### Configuration
+
+The wrapper script respects environment variables:
+
+```bash
+# Use a custom Docker image
+export KUBRICK_DOCKERHUB_IMAGE=myrepo/kubrick-cli:custom
+kubrick-docker
+
+# Use a different network mode
+export KUBRICK_NETWORK_MODE=bridge
+kubrick-docker
+
+# Enable local build fallback
+export KUBRICK_BUILD_CONTEXT=/path/to/kubrick-cli-repo
+kubrick-docker  # Will build locally if pulls fail
+```
+
+#### Uninstall
+
+```bash
+# Quick uninstall
+curl -fsSL https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/uninstall-kubrick-docker.sh | sh
+
+# Or manually
+rm ~/.local/bin/kubrick-docker
+```
+
+### Option 2: Use Docker Compose
+
+Docker Compose provides a convenient way to run Kubrick without typing long docker commands. The kubrick-cli repository includes a `docker-compose.yaml` file that you can reference from any project directory.
+
+See [Using Docker Compose](#using-docker-compose) section below for details.
+
+### Option 3: Manual Docker Commands
+
+If you prefer full control, use Docker commands directly. See [Quick Start](#quick-start) section below.
+
 ## Quick Start
 
 ### With standard Docker:
+
+**IMPORTANT:** Always include `--user $(id -u):$(id -g)` to avoid permission issues!
 
 ```bash
 # Navigate to your project directory
@@ -22,6 +157,7 @@ cd /path/to/your/project
 # Run kubrick (from Docker Hub)
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -31,6 +167,7 @@ docker run --rm -it \
 # Or from GitHub Container Registry
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -40,6 +177,15 @@ docker run --rm -it \
 
 ### With Docker Compose:
 
+**IMPORTANT:** Set UID/GID environment variables first (add to `~/.bashrc` or `~/.zshrc`):
+
+```bash
+export UID=$(id -u)
+export GID=$(id -g)
+```
+
+Then run:
+
 ```bash
 # Navigate to your project directory
 cd /path/to/your/project
@@ -48,7 +194,7 @@ cd /path/to/your/project
 docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
 ```
 
-**Note:** The docker-compose.yaml file is in the kubrick-cli repository. Use the `-f` flag to reference it from any project directory. See [Using Docker Compose](#using-docker-compose) for details.
+**Note:** The docker-compose.yaml file is in the kubrick-cli repository and uses `${UID}:${GID}` from your environment. See [Using Docker Compose](#using-docker-compose) for details.
 
 ## Basic Usage
 
@@ -58,6 +204,7 @@ docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
 cd /path/to/your/project
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -70,6 +217,7 @@ docker run --rm -it \
 ```bash
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -83,6 +231,7 @@ docker run --rm -it \
 ```bash
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -96,6 +245,7 @@ docker run --rm -it \
 ```bash
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -109,9 +259,10 @@ docker run --rm -it \
 ### Required Flags
 
 ```bash
---rm              # Remove container after exit
--it               # Interactive terminal
---network host    # Access localhost (for Triton)
+--rm                        # Remove container after exit
+-it                         # Interactive terminal
+--network host              # Access localhost (for Triton)
+--user $(id -u):$(id -g)    # Run as your user (CRITICAL for file permissions!)
 ```
 
 ### Volume Mounts
@@ -137,13 +288,19 @@ docker run ... rcland12/kubrick-cli [kubrick arguments]
 
 ```bash
 # Custom Triton URL
-docker run ... rcland12/kubrick-cli --triton-url server:8000
+docker run --rm -it --network host --user $(id -u):$(id -g) \
+  -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
+  rcland12/kubrick-cli --triton-url server:8000
 
 # Load conversation
-docker run ... rcland12/kubrick-cli --load 20240118_143022
+docker run --rm -it --network host --user $(id -u):$(id -g) \
+  -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
+  rcland12/kubrick-cli --load 20240118_143022
 
 # Multiple arguments
-docker run ... rcland12/kubrick-cli --triton-url server:8000 --model-name custom-model
+docker run --rm -it --network host --user $(id -u):$(id -g) \
+  -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
+  rcland12/kubrick-cli --triton-url server:8000 --model-name custom-model
 ```
 
 ## Configuration
@@ -155,6 +312,7 @@ Override defaults with environment variables:
 ```bash
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -219,6 +377,7 @@ Run from each project directory:
 cd ~/projects/app1
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -229,6 +388,7 @@ docker run --rm -it \
 cd ~/projects/app2
 docker run --rm -it \
   --network host \
+  --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
@@ -236,7 +396,7 @@ docker run --rm -it \
   rcland12/kubrick-cli
 ```
 
-Configuration and history are shared via `~/.kubrick`.
+Configuration and history are shared via `~/.kubrick`. Files in each project are owned by you thanks to `--user` flag.
 
 ## Using Docker Compose
 
@@ -251,21 +411,40 @@ services:
   kubrick:
     container_name: kubrick-cli
     image: rcland12/kubrick-cli:latest
-    build:
-      context: .
-      args:
-        UID: ${UID:-1000}
-        GID: ${GID:-1000}
+    build: .
     network_mode: host
     stdin_open: true
     tty: true
+    user: "${UID}:${GID}"  # CRITICAL: Uses your UID/GID for correct permissions
+    environment:
+      HOME: /home/kubrick
     volumes:
       - ${HOME}:/home/kubrick
       - ${PWD}:/workspace
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+    working_dir: /workspace
     command: []
 ```
+
+**Key Point:** The `user: "${UID}:${GID}"` line ensures files are created with your ownership.
+
+### Setup: Export UID and GID
+
+**REQUIRED FIRST STEP:** Add these exports to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+export UID=$(id -u)
+export GID=$(id -g)
+```
+
+Then reload your shell:
+
+```bash
+source ~/.bashrc  # or source ~/.zshrc
+```
+
+This allows Docker Compose to use your UID/GID from the `docker-compose.yaml` file.
 
 ### Usage from Any Project Directory
 
@@ -322,13 +501,21 @@ docker compose run --rm kubrick
 
 ### Creating a Shell Alias
 
-For convenience, create an alias that references the compose file:
-
-**Bash/Zsh (~/.bashrc or ~/.zshrc):**
+For convenience, create an alias that references the compose file. Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-# Replace with your actual path to kubrick-cli
+# Export UID/GID (REQUIRED for Docker Compose)
+export UID=$(id -u)
+export GID=$(id -g)
+
+# Create alias (replace with your actual path to kubrick-cli)
 alias kubrick='docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick'
+```
+
+Reload your shell:
+
+```bash
+source ~/.bashrc  # or source ~/.zshrc
 ```
 
 **Usage:**
@@ -343,8 +530,10 @@ kubrick --load 20240118_143022
 ### Key Points
 
 - **Always navigate to your project directory first** before running the command
+- **Must export UID and GID** in your shell for correct file permissions
 - The `-f` flag tells docker compose where to find the yaml file
 - The `${PWD}` variable in docker-compose.yaml automatically uses your current directory
+- The `${UID}:${GID}` in docker-compose.yaml ensures files are owned by you
 - Configuration and conversation history are shared across all projects via `~/.kubrick`
 
 ## Troubleshooting
@@ -398,29 +587,66 @@ kubrick --load 20240118_143022
 
 ### Permission Errors
 
-**Error:** Cannot write files
+**Error:** Cannot write files, or files are owned by root
+
+**Root Cause:** Container is not running with your UID/GID.
 
 **Solutions:**
 
-1. Check file permissions on host:
+1. **For manual Docker commands:** Ensure you include `--user $(id -u):$(id -g)`
 
    ```bash
-   ls -la /path/to/project
+   # Wrong (creates root-owned files)
+   docker run --rm -it --network host \
+     -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
+     rcland12/kubrick-cli
+
+   # Correct (creates files owned by you)
+   docker run --rm -it --network host --user $(id -u):$(id -g) \
+     -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
+     rcland12/kubrick-cli
    ```
 
-2. Ensure directory is writable:
+2. **For Docker Compose:** Ensure UID/GID are exported in your shell
+
    ```bash
-   chmod u+w /path/to/project
+   # Add to ~/.bashrc or ~/.zshrc
+   export UID=$(id -u)
+   export GID=$(id -g)
+
+   # Reload shell
+   source ~/.bashrc
    ```
 
-## Shell Alias
+3. **Clean up root-owned files** (if they were already created):
 
-For convenience, create a shell alias:
+   ```bash
+   # List root-owned files in current directory
+   find . -user root
 
-**Bash/Zsh (~/.bashrc or ~/.zshrc):**
+   # Fix ownership (use with caution)
+   sudo chown -R $(id -u):$(id -g) .
+   ```
+
+4. **Use `kubrick-docker` wrapper** (recommended): Handles UID/GID automatically
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/install-kubrick-docker.sh | sh
+   kubrick-docker  # No UID/GID configuration needed
+   ```
+
+## Shell Alias (Manual Docker)
+
+For convenience with manual Docker commands, create a shell alias. Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-alias kubrick='docker run --rm -it --network host -v ${HOME}:/home/kubrick -v ${PWD}:/workspace -v /etc/localtime:/etc/localtime:ro -v /etc/timezone:/etc/timezone:ro rcland12/kubrick-cli'
+alias kubrick='docker run --rm -it --network host --user $(id -u):$(id -g) -v ${HOME}:/home/kubrick -v ${PWD}:/workspace -v /etc/localtime:/etc/localtime:ro -v /etc/timezone:/etc/timezone:ro rcland12/kubrick-cli'
+```
+
+Reload your shell:
+
+```bash
+source ~/.bashrc  # or source ~/.zshrc
 ```
 
 **Usage:**
@@ -431,6 +657,8 @@ kubrick
 kubrick --triton-url my-server:8000
 kubrick --load 20240118_143022
 ```
+
+**Note:** The `$(id -u):$(id -g)` in the alias automatically uses your UID/GID each time.
 
 ## Requirements
 
