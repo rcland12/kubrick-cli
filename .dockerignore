@@ -1,12 +1,15 @@
 .dockerignore
-Dockerfile
-docker-compose.yaml
 .gitignore
+.pre-commit-config.yaml
+docker-compose.yaml
+Dockerfile
 LICENSE
 \*.md
 
 .git/
-**pycache**/
-\*.egg-info/
+.github/
 docs/
+\*.egg-info/
+**pycache**/
+scripts/
 tests/

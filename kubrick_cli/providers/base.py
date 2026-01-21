@@ -134,3 +134,20 @@ class ProviderAdapter(ABC):
             that support model switching.
         """
         pass
+
+    def estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
+        """
+        Estimate token count for messages.
+
+        Default implementation uses TokenCounter heuristics.
+        Providers can override for more accurate counting (e.g., using tiktoken).
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+
+        Returns:
+            Estimated token count
+        """
+        from ..context_manager import TokenCounter
+
+        return TokenCounter.count_messages_tokens(messages, self.provider_name)

@@ -104,6 +104,7 @@ class AgentLoop:
         stream_options: Dict = None,
         display_manager=None,
         tool_scheduler=None,
+        context_manager=None,
     ):
         """
         Initialize the agent loop.
@@ -117,6 +118,7 @@ class AgentLoop:
             stream_options: Optional streaming options
             display_manager: Optional DisplayManager instance for natural language display
             tool_scheduler: Optional ToolScheduler for parallel execution
+            context_manager: Optional ContextManager for context window management
         """
         self.llm_client = llm_client
         self.tool_executor = tool_executor
@@ -126,6 +128,16 @@ class AgentLoop:
         self.stream_options = stream_options or {}
         self.display_manager = display_manager
         self.tool_scheduler = tool_scheduler
+        self.context_manager = context_manager
+
+        # Initialize tool result truncator if context management is enabled
+        if context_manager:
+            from .context_manager import ToolResultTruncator
+
+            max_chars = context_manager.config.get("max_tool_result_chars", 10000)
+            self.truncator = ToolResultTruncator(max_chars=max_chars)
+        else:
+            self.truncator = None
 
     def run(
         self,
@@ -239,13 +251,21 @@ class AgentLoop:
                             )
 
                     if result["success"]:
-                        tool_results.append(
-                            f"Tool: {tool_name}\nResult: {result['result']}"
-                        )
+                        result_text = str(result["result"])
+                        # Truncate tool result if context management is enabled
+                        if self.truncator:
+                            result_text = self.truncator.truncate_result(
+                                result_text, tool_name
+                            )
+                        tool_results.append(f"Tool: {tool_name}\nResult: {result_text}")
                     else:
-                        tool_results.append(
-                            f"Tool: {tool_name}\nError: {result['error']}"
-                        )
+                        error_text = str(result["error"])
+                        # Truncate error messages too (though typically short)
+                        if self.truncator:
+                            error_text = self.truncator.truncate_result(
+                                error_text, tool_name
+                            )
+                        tool_results.append(f"Tool: {tool_name}\nError: {error_text}")
 
                     total_tool_calls += 1
 

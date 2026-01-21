@@ -1,10 +1,54 @@
 # Kubrick CLI Changelog
 
-## Version 0.1.4 (Unreleased)
+## Version 0.1.5
 
 ### Enhancements
 
-#### 1. GitHub Container Registry Support
+#### 1. Docker Wrapper Installation Scripts
+
+- **One-Command Install**: Easy installation via `curl | sh` for streamlined Docker usage
+- **`kubrick-docker` Wrapper**: Creates a convenient CLI wrapper that handles all Docker complexity
+- **Smart Image Fallback**: Automatically tries Docker Hub → GHCR → Local build (if configured)
+- **Automatic Configuration**:
+  - Installs to `~/.local/bin/kubrick-docker`
+  - Handles all volume mounts automatically
+  - Uses caller's UID/GID for correct file permissions
+  - Detects TTY for interactive mode
+  - Creates config directory before mounting (prevents root-owned dirs)
+
+**Installation:**
+
+```bash
+# Install
+curl -fsSL https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/install-kubrick-docker.sh | sh
+
+# Uninstall
+curl -fsSL https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/uninstall-kubrick-docker.sh | sh
+```
+
+**Usage:**
+
+```bash
+cd /path/to/your/project
+kubrick-docker
+kubrick-docker --triton-url my-server:8000
+```
+
+**Advanced Configuration:**
+
+The wrapper respects environment variables for customization:
+
+- `KUBRICK_DOCKERHUB_IMAGE`: Override Docker Hub image
+- `KUBRICK_GHCR_IMAGE`: Override GHCR image
+- `KUBRICK_BUILD_CONTEXT`: Enable local build fallback
+- `KUBRICK_NETWORK_MODE`: Change network mode (default: host)
+
+**Files Added:**
+
+- `scripts/install-kubrick-docker.sh` - Installation script
+- `scripts/uninstall-kubrick-docker.sh` - Uninstallation script
+
+#### 2. GitHub Container Registry Support
 
 - **Dual Docker Registry Publishing**: Docker images now published to both Docker Hub and GitHub Container Registry
 - **GitHub Packages Integration**: Images available at `ghcr.io/rcland12/kubrick-cli`
@@ -22,12 +66,27 @@
 
 **Documentation Updated:**
 
-- README.md now shows both registry options
-- docs/WIKI.md updated with dual registry support
-- docs/DOCKER.md added registry comparison section
+- **README.md**:
+  - Added prominent "Understanding Docker File Permissions" section
+  - Restructured Docker installation with 3 clear options
+  - Added benefits list for wrapper script
+  - Added Docker Compose setup instructions
+  - All examples include `--user $(id -u):$(id -g)`
+- **docs/DOCKER.md**:
+  - Added comprehensive "Understanding File Permissions" section
+  - Restructured with three installation methods
+  - All manual Docker commands include `--user $(id -u):$(id -g)`
+  - Docker Compose section emphasizes UID/GID export requirement
+  - Enhanced permission troubleshooting with 4 solutions
+  - Added technical details about `chmod 1777` approach
+- **docs/WIKI.md**:
+  - Updated Docker installation section with wrapper option
+  - All Docker commands include `--user $(id -u):$(id -g)`
+  - Added permission troubleshooting with before/after examples
+- **Consistency**: Every Docker command in all documentation now includes proper UID/GID handling
 - CD workflow automatically publishes to both registries
 
-#### 2. Code Quality Improvements
+#### 3. Code Quality Improvements
 
 - **Fixed unused variables**: Removed unused `result` variable in `kubrick_cli/planning.py`
 - **Fixed display preview**: Tool result previews now properly displayed (was creating preview but not showing it)

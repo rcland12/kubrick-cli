@@ -50,7 +50,22 @@ This installs the `kubrick` command globally.
 
 ### Option 2: Docker
 
-Run in a container without installing anything. Available from Docker Hub or GitHub Container Registry:
+Run in a container without installing anything. Available from Docker Hub or GitHub Container Registry.
+
+#### Recommended: Use the kubrick-docker Wrapper
+
+```bash
+# Install wrapper (handles UID/GID automatically)
+curl -fsSL https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/install-kubrick-docker.sh | sh
+
+# Run from any project
+cd /path/to/your/project
+kubrick-docker
+```
+
+#### Or Use Docker Commands Directly
+
+**IMPORTANT:** Always include `--user $(id -u):$(id -g)` to avoid file permission issues!
 
 ```bash
 cd /path/to/your/project
@@ -58,19 +73,27 @@ cd /path/to/your/project
 # From Docker Hub
 docker run --rm -it \
   --network host \
-  -v ~/.kubrick:/kubrick \
-  -v $(pwd):/workspace \
-  rcland12/kubrick-cli:latest
+  --user $(id -u):$(id -g) \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
+  rcland12/kubrick-cli
 
 # From GitHub Container Registry
 docker run --rm -it \
   --network host \
-  -v ~/.kubrick:/kubrick \
-  -v $(pwd):/workspace \
-  ghcr.io/rcland12/kubrick-cli:latest
+  --user $(id -u):$(id -g) \
+  -v ${HOME}:/home/kubrick \
+  -v ${PWD}:/workspace \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
+  ghcr.io/rcland12/kubrick-cli
 ```
 
-See [DOCKER.md](DOCKER.md) for complete Docker setup.
+**Why `--user` is required:** Without it, files are created as root and you'll have permission issues. The wrapper script handles this automatically.
+
+See [DOCKER.md](DOCKER.md) for complete Docker setup, UID/GID configuration, and troubleshooting.
 
 ## Usage
 
@@ -464,10 +487,28 @@ Each conversation is saved as JSON:
 2. Include working directory mount:
 
    ```bash
-   -v $(pwd):/workspace
+   -v ${PWD}:/workspace
    ```
 
 3. Only files in the mounted directory are accessible
+
+**Permission Issues:**
+
+Files created as root? You forgot the `--user` flag!
+
+```bash
+# Wrong (creates root-owned files)
+docker run --rm -it --network host \
+  -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
+  rcland12/kubrick-cli
+
+# Correct (creates files owned by you)
+docker run --rm -it --network host --user $(id -u):$(id -g) \
+  -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
+  rcland12/kubrick-cli
+```
+
+**Easiest solution:** Use the `kubrick-docker` wrapper which handles this automatically.
 
 See [DOCKER.md](DOCKER.md) for detailed troubleshooting.
 
