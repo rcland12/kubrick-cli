@@ -75,6 +75,8 @@ Your job is to classify tasks into three tiers: CONVERSATIONAL, SIMPLE, or COMPL
 
 **CONVERSATIONAL:**
 - Greetings, questions, general chat
+- Creative requests (poems, stories, jokes)
+- Explanations or teaching
 - No file operations or code changes needed
 - No tools required
 - Estimated 0 tool calls
@@ -83,6 +85,9 @@ Your job is to classify tasks into three tiers: CONVERSATIONAL, SIMPLE, or COMPL
   - "What can you do?"
   - "Explain what async/await means"
   - "Tell me about this project"
+  - "Write me a poem about X"
+  - "Tell me a joke"
+  - "Explain how X works"
 
 **SIMPLE:**
 - Single file operations (read, write, edit one file)

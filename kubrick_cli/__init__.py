@@ -10,11 +10,11 @@ from .execution_strategy import ExecutionConfig, ExecutionStrategy
 from .main import KubrickCLI
 from .planning import PlanningPhase
 from .progress import ProgressTracker
+from .providers.anthropic_provider import AnthropicProvider
 from .providers.base import ProviderAdapter
 from .providers.factory import ProviderFactory
-from .providers.triton_provider import TritonProvider
 from .providers.openai_provider import OpenAIProvider
-from .providers.anthropic_provider import AnthropicProvider
+from .providers.triton_provider import TritonProvider
 from .safety import SafetyConfig, SafetyManager
 from .scheduler import ToolScheduler
 from .setup_wizard import SetupWizard
