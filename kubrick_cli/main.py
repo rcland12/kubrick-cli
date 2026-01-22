@@ -16,6 +16,7 @@ from .agent_loop import AgentLoop
 from .classifier import TaskClassifier
 from .config import KubrickConfig
 from .display import DisplayManager
+from .evaluator import TaskEvaluator
 from .execution_strategy import ExecutionStrategy
 from .planning import PlanningPhase
 from .providers.factory import ProviderFactory
@@ -105,6 +106,30 @@ class KubrickCLI:
                 f"available: {available} tokens)[/dim]"
             )
 
+        # Initialize task evaluator if enabled
+        self.task_evaluator = None
+        if self.config.get("enable_task_evaluator", True):
+            evaluator_model = self.config.get("evaluator_model")
+            self.task_evaluator = TaskEvaluator(
+                llm_client=self.provider,
+                provider_name=self.provider.provider_name,
+                fast_model=evaluator_model,
+                enabled=True,
+            )
+            console.print(
+                "[dim]→ Task evaluator enabled (intelligent completion detection)[/dim]"
+            )
+
+        # Initialize session statistics (needed by AgentLoop)
+        self.session_stats = SessionStats()
+
+        # Check if clean display is enabled
+        clean_display_enabled = self.config.get("clean_display", True)
+        if clean_display_enabled:
+            console.print(
+                "[dim]→ Clean display mode enabled (animations, suppressed JSON)[/dim]"
+            )
+
         self.agent_loop = AgentLoop(
             llm_client=self.provider,
             tool_executor=self.tool_executor,
@@ -115,6 +140,9 @@ class KubrickCLI:
             display_manager=self.display_manager,
             tool_scheduler=self.tool_scheduler,
             context_manager=self.context_manager,
+            task_evaluator=self.task_evaluator,
+            clean_display=clean_display_enabled,
+            session_stats=self.session_stats,
         )
 
         self.classifier = TaskClassifier(self.provider)
@@ -132,9 +160,8 @@ class KubrickCLI:
             "%Y%m%d_%H%M%S"
         )
 
-        # Initialize session statistics and enhanced UI
-        self.session_stats = SessionStats()
-        self.enhanced_prompt = None  # Will be created after conversation_id is set
+        # Enhanced prompt will be created after conversation_id is set
+        self.enhanced_prompt = None
 
         # Wrap tool executor to track statistics
         self._original_tool_execute = self.tool_executor.execute
@@ -412,17 +439,22 @@ Examples:
 
 # Important Rules
 
-1. **ITERATE**: Call tools immediately when needed, then analyze results and continue iterating
-2. **MULTIPLE TOOLS**: You can call multiple tools per response
-3. **READ BEFORE EDIT**: Always read a file before editing it
-4. **SIGNAL COMPLETION**: Say "TASK_COMPLETE" when the task is done
-5. **USE TOOLS IMMEDIATELY**: Don't ask permission - just call the tool
-6. **ALWAYS RUN CODE YOU WRITE**: After writing a Python script, \
+1. **ACT, DON'T JUST PLAN**: When you say "Let's start", IMMEDIATELY call the tools. \
+Don't describe what you'll do - DO IT.
+2. **ITERATE**: Call tools immediately when needed, then analyze results and continue iterating
+3. **MULTIPLE TOOLS**: You can call multiple tools per response
+4. **READ BEFORE EDIT**: Always read a file before editing it
+5. **SIGNAL COMPLETION**: Say "TASK_COMPLETE" when the task is done
+6. **USE TOOLS IMMEDIATELY**: Don't ask permission - just call the tool
+7. **ALWAYS RUN CODE YOU WRITE**: After writing a Python script, \
 immediately execute it with run_bash
-7. **ALWAYS VERIFY FILE OPERATIONS**: After writing a file, read it back or list it to confirm
-8. **NEVER JUST DESCRIBE**: If you write code, RUN it. If you create a file, VERIFY it exists
+8. **ALWAYS VERIFY FILE OPERATIONS**: After writing a file, read it back or list it to confirm
+9. **NEVER JUST DESCRIBE**: If you write code, RUN it. If you create a file, VERIFY it exists
 
 ## Critical: What NOT To Do
+
+❌ **DON'T** say "Let's start by creating X" without calling write_file
+✅ **DO** say "Let's start by creating X" AND include the write_file tool call in the SAME response
 
 ❌ **DON'T** write a Python script and then just explain what it does
 ✅ **DO** write the script AND run it immediately
@@ -430,11 +462,14 @@ immediately execute it with run_bash
 ❌ **DON'T** say "The file has been created" without actually creating it
 ✅ **DO** use write_file tool, then verify with read_file or list_files
 
-❌ **DON'TASK** the user "Should I run this?" after writing code
+❌ **DON'T** ask the user "Should I run this?" after writing code
 ✅ **DO** run it immediately - that's what they asked for
 
 ❌ **DON'T** print file contents as output instead of writing them
 ✅ **DO** use write_file tool to actually create the file
+
+❌ **DON'T** describe your plan and wait for the next iteration to execute
+✅ **DO** execute the plan immediately with tool calls
 
 # Examples
 
@@ -507,7 +542,33 @@ logging.info('foo() called')\\n    return 42"
 
 TASK_COMPLETE: Added logging to all functions in main.py.
 
-## Example 4: Write file and verify (important!)
+## Example 4: After plan approval - ACT IMMEDIATELY
+
+User: "Create a sophisticated Python class for analyzing numbers"
+[Plan is created and approved]
+
+❌ **WRONG - Just describing:**
+Assistant: Sure, I can help with that. Here's a plan:
+1. Create a Python script
+2. Add a class with methods
+Let's start by creating the Python script.
+
+✓ Task complete (0 tool calls)  # ← PROBLEM: Nothing was actually done!
+
+✅ **CORRECT - Acting immediately:**
+Assistant: I'll create the Python script now.
+
+```tool_call
+{{
+  "tool": "write_file",
+  "parameters": {{
+    "file_path": "number_analyzer.py",
+    "content": "class NumberAnalyzer:\\n    def count_odds(self, n): ...\\n"
+  }}
+}}
+```
+
+## Example 5: Write file and verify (important!)
 User: "Create a README.md file with project info"
 Assistant: I'll create the README and verify it was written.
 
@@ -549,12 +610,6 @@ Assistant: I'll create the README and verify it was written.
         # Track statistics based on tool type
         if result.get("success"):
             if tool_name == "write_file":
-                # Check if file exists to determine if it's creation or modification
-                # from pathlib import Path
-
-                # file_path = parameters.get("file_path", "")
-                # full_path = Path(self.tool_executor.working_dir) / file_path
-                # Note: File will exist after write, so this checks before operation
                 # We'll count all writes as creates for now (could be enhanced)
                 self.session_stats.files_created += 1
 
@@ -849,6 +904,7 @@ Assistant: I'll create the README and verify it was written.
             messages=self.messages,
             tool_parser=self.parse_tool_calls,
             display_callback=None,
+            user_request=user_message,
         )
 
         self.agent_loop.max_iterations = original_max_iterations

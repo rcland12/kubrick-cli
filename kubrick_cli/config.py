@@ -98,6 +98,9 @@ class KubrickConfig:
             "total_timeout_seconds": 600,
             "enable_parallel_tools": True,
             "max_parallel_workers": 3,
+            # Task evaluator settings (intelligent completion detection)
+            "enable_task_evaluator": False,  # DISABLED - causes interference with tool calling
+            "evaluator_model": None,  # Use fast model if available, else main model
             # Safety settings
             "require_dangerous_command_confirmation": True,
             "tool_timeout_seconds": 30,
@@ -106,6 +109,7 @@ class KubrickConfig:
             "display_mode": "natural",
             "show_tool_results": True,
             "show_progress": True,
+            "clean_display": True,  # Suppress raw JSON tool calls (recommended)
             # Task classification settings
             "enable_task_classification": True,
             "enable_planning_phase": True,

@@ -28,6 +28,15 @@ class SessionStats:
         self.total_tokens = 0
         self.input_chars = 0
         self.iterations = 0
+        self.running_status = None  # Status message like "Agent running..." or None
+        self._spinner_index = 0
+        self._spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def get_spinner(self) -> str:
+        """Get next spinner character for animation."""
+        char = self._spinner_chars[self._spinner_index]
+        self._spinner_index = (self._spinner_index + 1) % len(self._spinner_chars)
+        return char
 
     def get_runtime(self) -> str:
         """Get formatted runtime."""
@@ -99,8 +108,10 @@ class EnhancedPrompt:
         # Create prompt style (NO background colors, only text colors)
         self.style = Style.from_dict(
             {
+                "bottom-toolbar": "bg:default fg:default noreverse",
+                "bottom-toolbar.text": "bg:default fg:default noreverse",
                 "prompt": "bold green",
-                "separator": "#444444",
+                "separator": "fg:#666666 bg:default noreverse",
                 "statusbar": "fg:#888888 nobold noitalic nounderline noreverse",
                 "statusbar.help": "fg:#5dade2 nobold noitalic nounderline noreverse",
                 "statusbar.time": "fg:#f39c12 nobold noitalic nounderline noreverse",
@@ -191,14 +202,26 @@ class EnhancedPrompt:
         toolbar_parts = []
 
         # Thin separator line above (using lower one-eighth block for minimal visual weight)
-        toolbar_parts.append(("class:separator", "▁" * term_width + "\n"))
+        toolbar_parts.append(("class:separator", "_" * term_width + "\n"))
 
-        # Help section (left)
-        toolbar_parts.extend(
-            [
-                ("class:statusbar.help", "Type /help for options"),
-            ]
-        )
+        # Running status (if agent is active)
+        if self.stats.running_status:
+            spinner = self.stats.get_spinner()
+            toolbar_parts.extend(
+                [
+                    (
+                        "class:statusbar.help",
+                        f"{spinner} {self.stats.running_status}  ",
+                    ),
+                ]
+            )
+        else:
+            # Help section (left) - only show when not running
+            toolbar_parts.extend(
+                [
+                    ("class:statusbar.help", "Type /help for options"),
+                ]
+            )
 
         # Stats section (center)
         stats_parts = []

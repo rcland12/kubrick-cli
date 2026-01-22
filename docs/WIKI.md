@@ -252,10 +252,15 @@ Here are all available configuration options:
   "display_mode": "natural",               // Display mode: "natural" or "technical"
   "show_tool_results": true,               // Show tool execution results
   "show_progress": true,                   // Show progress indicators
+  "clean_display": true,                   // Suppress raw JSON tool calls (recommended)
 
   // Task Classification Settings
   "enable_task_classification": true,      // Enable automatic task classification
   "enable_planning_phase": true,           // Enable planning phase for complex tasks
+
+  // Task Evaluator Settings (Advanced)
+  "enable_task_evaluator": false,          // EXPERIMENTAL: LLM-based completion detection (can interfere)
+  "evaluator_model": null,                 // Model for evaluator (null = use main model)
 
   // Context Management Settings
   "enable_context_management": true,       // Enable automatic context management
@@ -322,6 +327,23 @@ See the [Context Management](#context-management) section for detailed guidance.
 | `enable_parallel_tools` | `true` | Run read-only tools in parallel |
 | `max_parallel_workers` | `3` | Number of parallel tool workers |
 
+#### Display Options
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `display_mode` | `"natural"` | Display style: `"natural"` (friendly) or `"technical"` (detailed) |
+| `show_tool_results` | `true` | Show full tool execution results in output |
+| `show_progress` | `true` | Show progress indicators and status messages |
+| `clean_display` | `true` | **Suppress raw JSON tool calls** - Shows only clean output, hides technical JSON blocks ✨ |
+
+**Clean Display Mode** (recommended): When enabled, Kubrick hides the raw `\`\`\`tool_call {...}` JSON blocks during streaming, giving you cleaner output while still showing:
+- All agent responses and explanations
+- Tool execution messages (`→ Called write_file`, `✓ succeeded`)
+- Iteration progress and status
+- Error messages and warnings
+
+Disable with `/config clean_display false` if you want to see the raw JSON for debugging.
+
 #### Safety & Limits
 
 | Setting | Default | Description |
@@ -329,6 +351,15 @@ See the [Context Management](#context-management) section for detailed guidance.
 | `require_dangerous_command_confirmation` | `true` | Confirm dangerous bash commands (rm, sudo, etc.) |
 | `tool_timeout_seconds` | `30` | Individual tool timeout |
 | `max_file_size_mb` | `10` | Maximum file size to read |
+
+#### Task Evaluator (⚠️ Experimental)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enable_task_evaluator` | `false` | **EXPERIMENTAL** - Uses LLM to intelligently detect task completion |
+| `evaluator_model` | `null` | Model for evaluator (null = use main model, or specify "gpt-4o-mini", etc.) |
+
+**Note:** The task evaluator is currently **disabled by default** as it can sometimes interfere with the agent's tool calling behavior. It was designed to detect when tasks are complete or if the agent is stuck, but in practice it can cause the agent to apologize unnecessarily or stop prematurely. Leave it disabled unless you want to experiment with it.
 
 ### Environment Variables
 
