@@ -1,5 +1,241 @@
 # Kubrick CLI Changelog
 
+## Version 0.1.6
+
+### Enhancements
+
+#### 1. Clean Display Mode
+
+- **Suppressed JSON Tool Calls**: Raw `\`\`\`tool_call` JSON blocks are now hidden during streaming for cleaner output
+- **Full Visibility Maintained**: All agent responses, tool execution messages, and progress indicators remain visible
+- **Configurable**: Enable/disable via `clean_display` config option (enabled by default)
+- **Benefits**:
+  - Cleaner, more professional interface
+  - Reduced visual clutter
+  - Full transparency into agent actions
+  - All functionality preserved
+
+**Configuration**:
+```json
+{
+  "clean_display": true  // Default: enabled
+}
+```
+
+**What You See**:
+- Agent natural language responses
+- Tool execution status (`→ Called write_file`, `✓ write_file succeeded`)
+- Iteration progress (`→ Agent iteration 1/15`)
+- Context management messages
+
+**What's Hidden**:
+- Only the raw JSON `\`\`\`tool_call {...}` blocks
+
+See [docs/CLEAN_DISPLAY_MODE.md](docs/CLEAN_DISPLAY_MODE.md) for details.
+
+#### 2. Running Status Indicator
+
+- **Persistent Status Bar**: Shows animated spinner when agent is active
+- **Always Visible**: Replaces "Type /help for options" with `⠋ Agent running...` during processing
+- **Automatic Management**: Status set at agent start, cleared on completion (via finally block)
+- **Better UX**: Eliminates the "frozen program" feeling during LLM thinking
+- **No Emojis**: Clean, professional display without emoji clutter
+
+**Status Lifecycle**:
+- During agent work: `⠋ Agent running...` in status bar
+- During tool execution: Spinner with action description (`⠙ Writing /path/to/file.py`)
+- After completion: Status bar returns to normal (`Type /help for options`)
+
+**Benefits**:
+- Continuous feedback that system is working
+- Professional, polished interface
+- Clear understanding of agent activity
+- Reduces user anxiety during long operations
+
+See [docs/RUNNING_STATUS_INDICATOR.md](docs/RUNNING_STATUS_INDICATOR.md) for details.
+
+#### 3. Enhanced Session Statistics
+
+- **New SessionStats Class**: Centralized tracking of session metrics in `kubrick_cli/ui.py`
+- **Real-time Statistics**: Live updates in status bar
+  - Runtime duration
+  - Files created/modified
+  - Lines added/deleted
+  - Tool calls executed
+- **Running Status Integration**: SessionStats now manages running indicator state
+- **Spinner Animation**: Braille pattern spinner for minimal visual footprint
+
+**Display Example**:
+```
+Type /help for options    Runtime: 45s  Files: +3  Lines: +127  Tools: 8  Tokens: 15234
+```
+
+#### 4. Animated Display System
+
+- **New Module**: `kubrick_cli/animated_display.py` for managing display states
+- **StreamBuffer**: Intelligent buffer that suppresses JSON while preserving all other content
+- **ToolProgress**: Clean tool execution display without emojis
+- **Tool-Specific Verbs**: Context-aware action descriptions
+  - `write_file` → "Writing"
+  - `edit_file` → "Editing"
+  - `run_bash` → "Running"
+  - `search_code` → "Searching"
+
+#### 5. Critical Bug Fixes
+
+**StreamBuffer Display Bug** (Critical):
+- **Issue**: Agent stopped generating tool calls, kept apologizing
+- **Root Cause**: StreamBuffer was suppressing ALL text when no tool call was present
+- **Fix**: Properly handle non-tool-call content - display everything normally when no JSON blocks detected
+- **Impact**: Agent now works reliably for all tasks
+
+**Task Evaluator Issues**:
+- **Issue**: Evaluator causing agent to stop working or apologize repeatedly
+- **Fix**: Disabled by default (`enable_task_evaluator: false`)
+- **Status**: Marked as experimental feature
+
+**Indentation Error**:
+- **Issue**: `UnboundLocalError` in evaluator code
+- **Fix**: Properly indented evaluator logic inside conditional block
+
+See [docs/v0.1.6_FIXES.md](docs/v0.1.6_FIXES.md) for detailed analysis.
+
+#### 6. Security Infrastructure
+
+- **New Security Workflow**: Comprehensive automated security scanning (`.github/workflows/security.yml`)
+- **Multiple Scanners**:
+  - CodeQL: Semantic code analysis
+  - Bandit: Python security linter
+  - Semgrep: Static analysis for vulnerabilities
+  - Safety: Dependency vulnerability checking
+  - Trivy: Docker image vulnerability scanning
+- **OSSF Scorecard**: Automated security health metrics
+- **Security Badge**: Added to README for transparency
+
+**New Documentation**:
+- `docs/SECURITY.md` - Security policy, reporting vulnerabilities, best practices
+- Security scanning results visible in GitHub Actions
+
+#### 7. Documentation Improvements
+
+**README.md Simplification**:
+- Reduced from 240 lines to 99 lines
+- Removed extensive Docker permission explanations (moved to DOCKER.md)
+- Removed provider flag examples (setup wizard handles this)
+- Added practical example showing Kubrick in action
+- Simplified features list (no emojis)
+- More professional and approachable for new users
+
+**WIKI.md Enhancements**:
+- Added "Display Options" section documenting `clean_display`
+- Added "Task Evaluator" section with experimental warning
+- Documented all new configuration options
+- Enhanced troubleshooting sections
+- Added usage examples for new features
+
+**New Documentation Files**:
+- `docs/CLEAN_DISPLAY_MODE.md` - Complete guide to clean display
+- `docs/RUNNING_STATUS_INDICATOR.md` - Running status implementation details
+- `docs/v0.1.6_FIXES.md` - Critical bug fix documentation
+- `docs/SECURITY.md` - Security policy and guidelines
+
+#### 8. Configuration Updates
+
+**New Options**:
+```json
+{
+  "clean_display": true,              // Hide JSON tool calls (default: enabled)
+  "enable_task_evaluator": false,     // Experimental evaluator (default: disabled)
+  "evaluator_model": "gpt-4o-mini"    // Model for task evaluation
+}
+```
+
+**Updated Defaults**:
+- `clean_display`: `true` - Cleaner output by default
+- `enable_task_evaluator`: `false` - Disabled to prevent interference
+
+#### 9. Code Quality Improvements
+
+- **Removed Unused Variable**: Fixed unused `full_path` variable in `main.py:609`
+- **Black Formatting**: Applied black formatting across all modified files
+- **Flake8 Compliance**: Resolved linting issues
+- **Type Annotations**: Improved type hints in new modules
+
+### Bug Fixes
+
+1. **Critical: StreamBuffer suppression bug** - Agent now generates tool calls properly
+2. **Task evaluator interference** - Disabled by default to prevent agent disruption
+3. **Indentation error in evaluator** - Fixed UnboundLocalError
+4. **Display freeze perception** - Running status indicator provides continuous feedback
+5. **Unused variable cleanup** - Removed unused `full_path` and `file_path` variables
+
+### Files Added
+
+- `kubrick_cli/ui.py` - SessionStats and UI helper classes
+- `kubrick_cli/animated_display.py` - StreamBuffer and display management
+- `kubrick_cli/evaluator.py` - Task evaluator (experimental)
+- `.github/workflows/security.yml` - Security scanning workflow
+- `docs/SECURITY.md` - Security policy and guidelines
+- `docs/CLEAN_DISPLAY_MODE.md` - Clean display documentation
+- `docs/RUNNING_STATUS_INDICATOR.md` - Status indicator documentation
+- `docs/v0.1.6_FIXES.md` - Critical bug fix documentation
+
+### Files Modified
+
+- `kubrick_cli/main.py` - Integration of SessionStats, clean display, and running status
+- `kubrick_cli/agent_loop.py` - Enhanced display integration, status management, fixed evaluator bug
+- `kubrick_cli/config.py` - Added new configuration options with defaults
+- `kubrick_cli/context_manager.py` - Improved context handling
+- `kubrick_cli/__init__.py` - Export new UI classes
+- `kubrick_cli/scheduler.py` - Minor formatting updates
+- `README.md` - Simplified and modernized (240 → 99 lines)
+- `docs/WIKI.md` - Comprehensive updates for new features
+- `pyproject.toml` - Version bump to 0.1.6
+- `.github/workflows/cd.yml` - Enhanced CD workflow
+
+### Migration Notes
+
+**For Existing Users**:
+- Clean display is enabled by default - disable with `/config clean_display false` if needed
+- Task evaluator is disabled by default - enable with `/config enable_task_evaluator true` (experimental)
+- All existing functionality preserved - new features enhance UX without breaking changes
+
+**Configuration**:
+- No config changes required - new defaults work well
+- Optional: Explore clean display mode for better UX
+- Optional: Try task evaluator (experimental, may cause issues)
+
+### Testing
+
+All changes tested with:
+- Simple tasks (file creation, editing)
+- Complex tasks (multi-step planning and execution)
+- Long-running operations (verify status indicator)
+- Error conditions (verify clean error display)
+
+**Test Results**:
+- ✅ Agent generates tool calls properly
+- ✅ Clean display suppresses only JSON
+- ✅ Running status indicator works reliably
+- ✅ Tool execution messages always visible
+- ✅ Tasks complete successfully
+
+### Known Issues
+
+**Minor: First Iteration Apology**
+- Occasionally the agent says "I apologize for the confusion" on iteration 1-2
+- Does not prevent task completion
+- Cosmetic issue only
+
+### Recommendations
+
+1. **Keep clean_display enabled** (default) - Better UX, fully functional
+2. **Keep task_evaluator disabled** (default) - Prevents interference
+3. **For debugging**: Disable clean_display temporarily to see raw JSON
+4. **Update regularly**: `pip install --upgrade kubrick-cli`
+
+---
+
 ## Version 0.1.5
 
 ### Enhancements

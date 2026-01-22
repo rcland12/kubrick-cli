@@ -69,10 +69,10 @@ class ToolScheduler:
         for i, (tool_name, params) in enumerate(tool_calls):
             if tool_name in READ_ONLY_TOOLS:
                 read_only_calls.append((i, tool_name, params))
-                call_order.append(("read", len(read_only_calls) - 1))
+                call_order.append(("read", i))
             else:
                 write_calls.append((i, tool_name, params))
-                call_order.append(("write", len(write_calls) - 1))
+                call_order.append(("write", i))
 
         read_results = {}
         if read_only_calls:

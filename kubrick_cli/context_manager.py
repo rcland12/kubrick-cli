@@ -206,7 +206,13 @@ class ContextManager:
     - Preserve system messages and recent context
     """
 
-    def __init__(self, provider_name: str, model_name: str, config: Dict[str, Any]):
+    def __init__(
+        self,
+        provider_name: str,
+        model_name: str,
+        config: Dict[str, Any],
+        llm_client=None,
+    ):
         """
         Initialize context manager with provider-specific settings.
 
@@ -214,13 +220,16 @@ class ContextManager:
             provider_name: Provider (openai, anthropic, triton)
             model_name: Model name for window size lookup
             config: Configuration dict with context management settings
+            llm_client: Optional LLM client for summarization
         """
         self.provider_name = provider_name
         self.model_name = model_name
         self.config = config
         self.token_counter = TokenCounter()
+        self.llm_client = llm_client
 
         self.context_window = self._get_context_window()
+        self.max_output_tokens = config.get("max_output_tokens", 2048)
 
         self.usage_threshold = config.get("context_usage_threshold", 0.75)
         self.summarization_threshold = config.get(
@@ -228,24 +237,41 @@ class ContextManager:
         )
         self.min_messages_to_keep = config.get("min_messages_to_keep", 4)
 
+        # Initialize summarizer if LLM client is available
+        if llm_client:
+            self.summarizer = MessageSummarizer(llm_client, max_summary_tokens=500)
+        else:
+            self.summarizer = None
+
     def _get_context_window(self) -> int:
         """
         Get context window size for current model.
 
+        Uses model_max_context_override if set, otherwise uses model-specific defaults.
+
         Returns:
             Context window size in tokens
         """
+        # Check for manual override first (for custom vLLM configurations)
+        override = self.config.get("model_max_context_override")
+        if override is not None:
+            return int(override)
+
+        # Otherwise use model-specific defaults
         context_windows = self.config.get("context_windows", {})
         return context_windows.get(
             self.model_name, self.config.get("default_context_window", 8192)
         )
 
-    def check_and_manage(self, messages: List[Dict]) -> Tuple[List[Dict], Dict]:
+    def check_and_manage(
+        self, messages: List[Dict], reserve_output_tokens: bool = True
+    ) -> Tuple[List[Dict], Dict]:
         """
         Check current token usage and manage context if needed.
 
         Args:
             messages: Current conversation messages
+            reserve_output_tokens: Whether to reserve tokens for LLM output (default: True)
 
         Returns:
             Tuple of (managed_messages, metadata)
@@ -254,19 +280,28 @@ class ContextManager:
             messages, self.provider_name
         )
 
+        # Calculate available context (reserving space for output)
+        available_context = self.context_window
+        if reserve_output_tokens:
+            available_context -= self.max_output_tokens
+
         metadata = {
             "tokens_before": current_tokens,
             "tokens_after": current_tokens,
             "action_taken": None,
+            "reserved_output_tokens": (
+                self.max_output_tokens if reserve_output_tokens else 0
+            ),
         }
 
-        usage_ratio = current_tokens / self.context_window
+        usage_ratio = current_tokens / available_context
 
         if usage_ratio >= self.summarization_threshold:
             messages = self._summarize_and_trim(messages)
             metadata["action_taken"] = "summarized"
         elif usage_ratio >= self.usage_threshold:
-            target_tokens = int(self.context_window * 0.6)
+            # Target 60% of available context to leave room for growth
+            target_tokens = int(available_context * 0.6)
             messages = self._trim_messages(messages, target_tokens)
             metadata["action_taken"] = "trimmed"
 
@@ -274,7 +309,7 @@ class ContextManager:
             messages, self.provider_name
         )
 
-        if current_tokens > self.context_window:
+        if current_tokens > available_context:
             console.print("[red]⚠ Context critically full. Emergency reset.[/red]")
             messages = self._emergency_reset(messages)
             metadata["action_taken"] = "emergency_reset"
@@ -363,15 +398,34 @@ class ContextManager:
         if not middle_msgs:
             return messages
 
-        # For now, return with note - actual summarization requires LLM access
-        # This can be enhanced to call MessageSummarizer when LLM client is available
-        summary_note = {
-            "role": "user",
-            "content": (
-                f"[Context Summary] {len(middle_msgs)} messages were compressed "
-                "to manage context window limits."
-            ),
-        }
+        # Try to use LLM-based summarization if available
+        if self.summarizer:
+            try:
+                console.print("[yellow]→ Summarizing conversation history...[/yellow]")
+                summary_text = self.summarizer.summarize_messages(middle_msgs)
+                summary_note = {
+                    "role": "user",
+                    "content": summary_text,
+                }
+            except Exception as e:
+                console.print(f"[red]Summarization failed: {e}[/red]")
+                # Fallback to simple note
+                summary_note = {
+                    "role": "user",
+                    "content": (
+                        f"[Context Summary] {len(middle_msgs)} messages were compressed "
+                        "to manage context window limits."
+                    ),
+                }
+        else:
+            # Fallback to simple note if no summarizer available
+            summary_note = {
+                "role": "user",
+                "content": (
+                    f"[Context Summary] {len(middle_msgs)} messages were compressed "
+                    "to manage context window limits."
+                ),
+            }
 
         return [system_msg, summary_note] + recent_msgs
 
