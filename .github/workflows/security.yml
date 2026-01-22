@@ -127,8 +127,10 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' || github.event_name == 'schedule'
     permissions:
-      security-events: write
+      contents: read
+      actions: read
       id-token: write
+      security-events: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
