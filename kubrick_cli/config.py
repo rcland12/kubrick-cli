@@ -120,17 +120,32 @@ class KubrickConfig:
             "max_tool_result_chars": 10000,  # 10K chars per tool result
             # Model-specific context windows (tokens)
             "context_windows": {
-                "gpt-4": 8192,
+                # OpenAI models (most modern deployments support 128k for gpt-4)
+                "gpt-4": 128000,  # Modern GPT-4 (originally 8k, but 128k now standard)
                 "gpt-4-32k": 32768,
                 "gpt-4-turbo": 128000,
+                "gpt-4-turbo-preview": 128000,
                 "gpt-4o": 128000,
+                "gpt-4o-mini": 128000,
                 "gpt-3.5-turbo": 16385,
+                "gpt-3.5-turbo-16k": 16385,
+                # Anthropic models
                 "claude-sonnet-4-5-20250929": 200000,
                 "claude-opus-4-1-20250805": 200000,
                 "claude-haiku-4-5-20251001": 200000,
-                "llm_decoupled": 8192,  # Triton default (conservative)
+                "claude-3-5-sonnet-20241022": 200000,
+                "claude-3-opus-20240229": 200000,
+                "claude-3-sonnet-20240229": 200000,
+                "claude-3-haiku-20240307": 200000,
+                # Triton/vLLM (conservative defaults)
+                "llm_decoupled": 32768,
             },
-            "default_context_window": 8192,  # Fallback for unknown models
+            "default_context_window": 16385,  # Fallback for unknown models
+            # Override for actual model max_model_len if different from defaults
+            # Set this to match your vLLM --max-model-len parameter
+            "model_max_context_override": None,  # e.g., 16000 for 16k context
+            # Maximum output tokens to reserve for generation
+            "max_output_tokens": 2048,  # Reserve tokens for LLM output
         }
 
     def _save_config(self, config: Dict[str, Any]):

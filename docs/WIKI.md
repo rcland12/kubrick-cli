@@ -9,6 +9,7 @@ Complete guide to using Kubrick CLI for AI-assisted coding.
 - [Usage](#usage)
 - [Provider Support](#provider-support)
 - [Configuration](#configuration)
+- [Context Management](#context-management)
 - [Available Tools](#available-tools)
 - [Special Commands](#special-commands)
 - [Conversation Management](#conversation-management)
@@ -35,20 +36,37 @@ Complete guide to using Kubrick CLI for AI-assisted coding.
 
 ## Installation
 
-### Option 1: Local Installation
+### Option 1: PyPI (Recommended)
 
-Install from source:
+Install the latest stable release from PyPI:
 
 ```bash
-cd /path/to/kubrick
-pip install -e .
+pip install kubrick-cli
 ```
 
-This installs the `kubrick` command globally.
+This is the easiest and most reliable method. The package is available on [PyPI](https://pypi.org/project/kubrick-cli/).
+
+**Upgrade to latest version:**
+
+```bash
+pip install --upgrade kubrick-cli
+```
+
+### Option 2: Development Installation
+
+For contributing or testing the latest changes:
+
+```bash
+git clone https://github.com/rcland12/kubrick-cli.git
+cd kubrick-cli
+pip install -e ".[dev]"
+```
+
+This installs the `kubrick` command globally in editable mode.
 
 **Dependencies:** Only `rich` and `prompt_toolkit` for the CLI interface. No external LLM libraries required!
 
-### Option 2: Docker
+### Option 3: Docker
 
 Run in a container without installing anything. Available from Docker Hub or GitHub Container Registry.
 
@@ -188,26 +206,129 @@ Want to add support for another LLM? See [PROVIDERS.md](PROVIDERS.md) for a guid
 
 ## Configuration
 
-### Config File
+### Config File Location
 
-Configuration is stored at `~/.kubrick/config.json`:
+All configuration is stored at `~/.kubrick/config.json`. Kubrick creates this automatically on first run with sensible defaults.
+
+### Complete Configuration Reference
+
+Here are all available configuration options:
 
 ```json
 {
-  "provider": "triton",
-  "triton_url": "localhost:8000",
-  "triton_model": "llm_decoupled",
-  "openai_api_key": null,
-  "openai_model": "gpt-4",
-  "anthropic_api_key": null,
-  "anthropic_model": "claude-sonnet-4-5-20250929",
-  "default_working_dir": null,
-  "auto_save_conversations": true,
-  "max_conversations": 100,
-  "max_iterations": 15,
-  "max_tools_per_turn": 5
+  // Provider Settings
+  "provider": "triton",                    // LLM provider: "triton", "openai", or "anthropic"
+
+  // Triton Provider Settings
+  "triton_url": "localhost:8000",          // Triton server URL
+  "triton_model": "llm_decoupled",         // Triton model name
+
+  // OpenAI Provider Settings
+  "openai_api_key": null,                  // OpenAI API key
+  "openai_model": "gpt-4",                 // OpenAI model name
+
+  // Anthropic Provider Settings
+  "anthropic_api_key": null,               // Anthropic API key
+  "anthropic_model": "claude-sonnet-4-5-20250929",  // Anthropic model name
+
+  // General Settings
+  "default_working_dir": null,             // Default working directory
+  "auto_save_conversations": true,         // Auto-save conversations after each turn
+  "max_conversations": 100,                // Max conversations to keep (auto-cleanup)
+
+  // Agent Loop Settings
+  "max_iterations": 15,                    // Maximum agentic iterations per turn
+  "max_tools_per_turn": 5,                 // Maximum tools per iteration
+  "total_timeout_seconds": 600,            // Total timeout for agent loop (10 min)
+  "enable_parallel_tools": true,           // Enable parallel tool execution
+  "max_parallel_workers": 3,               // Max parallel tool workers
+
+  // Safety Settings
+  "require_dangerous_command_confirmation": true,  // Confirm dangerous bash commands
+  "tool_timeout_seconds": 30,              // Timeout for individual tools
+  "max_file_size_mb": 10,                  // Maximum file size to read (MB)
+
+  // Display Settings
+  "display_mode": "natural",               // Display mode: "natural" or "technical"
+  "show_tool_results": true,               // Show tool execution results
+  "show_progress": true,                   // Show progress indicators
+
+  // Task Classification Settings
+  "enable_task_classification": true,      // Enable automatic task classification
+  "enable_planning_phase": true,           // Enable planning phase for complex tasks
+
+  // Context Management Settings
+  "enable_context_management": true,       // Enable automatic context management
+  "context_usage_threshold": 0.75,         // Start trimming at 75% of available context
+  "context_summarization_threshold": 0.85, // Summarize at 85% of available context
+  "min_messages_to_keep": 4,               // Always preserve last N messages
+  "max_tool_result_chars": 10000,          // Truncate tool results longer than this
+  "max_output_tokens": 2048,               // Reserve tokens for LLM output
+
+  // Model Context Windows (in tokens)
+  "context_windows": {
+    // OpenAI models
+    "gpt-4": 128000,                       // Modern GPT-4 (128k context)
+    "gpt-4-turbo": 128000,
+    "gpt-4o": 128000,
+    "gpt-4o-mini": 128000,
+    "gpt-3.5-turbo": 16385,
+
+    // Anthropic models
+    "claude-sonnet-4-5-20250929": 200000,  // Claude has 200k context
+    "claude-opus-4-1-20250805": 200000,
+    "claude-3-5-sonnet-20241022": 200000,
+
+    // Triton/vLLM
+    "llm_decoupled": 8192                  // Conservative default for Triton
+  },
+  "default_context_window": 8192,          // Fallback for unknown models
+  "model_max_context_override": null       // Manual override for custom model configs
 }
 ```
+
+### Key Configuration Options Explained
+
+#### Context Management (⭐ Important!)
+
+These settings control how Kubrick manages conversation length to prevent context overflow:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enable_context_management` | `true` | Enable automatic context management |
+| `model_max_context_override` | `null` | **Override context window** - Set this to match your vLLM `--max-model-len` if using custom Triton models |
+| `max_output_tokens` | `2048` | Tokens reserved for LLM output (prevents input from using all space) |
+| `context_usage_threshold` | `0.75` | Start trimming old messages at 75% usage |
+| `context_summarization_threshold` | `0.85` | Summarize conversation at 85% usage |
+| `min_messages_to_keep` | `4` | Always preserve last N messages |
+| `max_tool_result_chars` | `10000` | Truncate large tool outputs |
+
+**For Triton/vLLM users**: If you're loading models with custom context lengths (e.g., `--max-model-len 16384`), you MUST set:
+
+```bash
+/config model_max_context_override 16384
+/config max_output_tokens 2048
+```
+
+See the [Context Management](#context-management) section for detailed guidance.
+
+#### Agent Behavior
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `max_iterations` | `15` | How many times the agent can iterate |
+| `max_tools_per_turn` | `5` | Maximum tools per iteration |
+| `total_timeout_seconds` | `600` | Total time limit (10 minutes) |
+| `enable_parallel_tools` | `true` | Run read-only tools in parallel |
+| `max_parallel_workers` | `3` | Number of parallel tool workers |
+
+#### Safety & Limits
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `require_dangerous_command_confirmation` | `true` | Confirm dangerous bash commands (rm, sudo, etc.) |
+| `tool_timeout_seconds` | `30` | Individual tool timeout |
+| `max_file_size_mb` | `10` | Maximum file size to read |
 
 ### Environment Variables
 
@@ -234,9 +355,178 @@ kubrick --provider openai
 Update config while running:
 
 ```bash
+You: /config                    # Show all configuration
 You: /config triton_url myserver:8000
 You: /config max_conversations 50
+You: /config model_max_context_override 16384
 ```
+
+### Common Configuration Examples
+
+```bash
+# For Triton/vLLM with custom context
+/config model_max_context_override 16384
+/config max_output_tokens 2048
+
+# Adjust context management thresholds
+/config context_usage_threshold 0.60     # Trim earlier (more aggressive)
+/config context_summarization_threshold 0.75
+
+# Increase max iterations for complex tasks
+/config max_iterations 20
+
+# Disable parallel tools (if causing issues)
+/config enable_parallel_tools false
+```
+
+## Context Management
+
+Kubrick includes sophisticated context management to prevent conversations from exceeding model limits. This prevents hallucinations and ensures stable, long-running conversations.
+
+### How It Works
+
+Context management operates in three stages:
+
+1. **Normal Operation** (< 75% usage)
+   - No intervention
+   - Full conversation history preserved
+
+2. **Trimming** (75% - 85% usage)
+   - Removes oldest messages (except system prompt and recent N messages)
+   - Adds a note about trimmed messages
+   - Targets 60% usage to leave growth room
+
+3. **Summarization** (> 85% usage)
+   - Uses LLM to summarize middle conversation
+   - Keeps: system prompt + summary + recent messages
+   - Preserves important context while reducing tokens
+
+4. **Emergency Reset** (exceeds 100%)
+   - Rare, but prevents complete failure
+   - Keeps only system prompt + last user message
+
+### Provider-Specific Context Windows
+
+| Provider | Model | Context Window | Output Reserved | Available |
+|----------|-------|----------------|-----------------|-----------|
+| **OpenAI** | gpt-4 | 128,000 | 2,048-4,096 | ~124k-126k |
+| | gpt-4o | 128,000 | 2,048-4,096 | ~124k-126k |
+| | gpt-3.5-turbo | 16,385 | 2,048-4,096 | ~12k-14k |
+| **Anthropic** | Claude 3+ | 200,000 | 2,048-4,096 | ~196k-198k |
+| **Triton/vLLM** | Custom | **Configure!** | 2,048+ | Depends |
+
+### Monitoring Context Usage
+
+Check your context usage anytime:
+
+```bash
+You: /context
+```
+
+This displays:
+- Current token count
+- Context window size
+- Usage percentage
+- Trim/summarize thresholds
+- Warning if approaching limits
+
+Example output:
+```
+┌────────────────────────────┐
+│ Context Window Status      │
+├──────────────┬─────────────┤
+│ Metric       │ Value       │
+├──────────────┼─────────────┤
+│ Current      │ 5,234       │
+│ Context      │ 128,000     │
+│ Usage        │ 4.1%        │
+│ Trim at      │ 75%         │
+│ Summarize at │ 85%         │
+└──────────────┴─────────────┘
+
+✓ Context usage healthy
+```
+
+### Configuring for Triton/vLLM
+
+**CRITICAL**: If you're using Triton/vLLM with custom model configurations, you MUST set the context window to match your deployment:
+
+```bash
+# Example: Gemma 3 27B with 16K context
+# If you launched vLLM with: --max-model-len 16384
+kubrick
+/config model_max_context_override 16384
+/config max_output_tokens 2048
+
+# Example: Llama 3.3 70B with full 128K context
+# If you launched vLLM with: --max-model-len 131072
+/config model_max_context_override 131072
+/config max_output_tokens 8192
+```
+
+**Why this matters**:
+- Default for Triton is conservative (8,192 tokens)
+- If your model supports more, you'll trim way too often
+- If you set too high, you'll get hallucinations and errors
+
+### Adjusting Context Behavior
+
+```bash
+# More aggressive trimming (trim earlier, use less context)
+/config context_usage_threshold 0.60
+/config context_summarization_threshold 0.75
+
+# Less aggressive (use more context before trimming)
+/config context_usage_threshold 0.85
+/config context_summarization_threshold 0.92
+
+# Adjust output reservation
+/config max_output_tokens 4096     # For longer responses
+/config max_output_tokens 1024     # For short, concise responses
+```
+
+### Troubleshooting Context Issues
+
+#### "Context trimming too frequently"
+
+**Symptoms**: Seeing "Context managed: trimmed" very often
+
+**Solutions**:
+1. Check your actual context window: `/context`
+2. For OpenAI/Anthropic: Should be 128k/200k (if showing 8k, update Kubrick)
+3. For Triton/vLLM: Set `model_max_context_override` to match your `--max-model-len`
+4. Increase thresholds: `/config context_usage_threshold 0.85`
+5. Reduce output reservation: `/config max_output_tokens 2048`
+
+#### "Still getting hallucinations"
+
+**Symptoms**: LLM outputs garbage, lyrics, or nonsense at end of response
+
+**Solutions**:
+1. Check context: `/context` - are you hitting limits?
+2. Verify `model_max_context_override` matches your vLLM config
+3. Reduce `max_output_tokens` to reserve more space for input
+4. Some vLLM versions don't respect `max_tokens` properly - try smaller values
+
+#### "Not trimming when I expect it to"
+
+**Check**:
+1. View usage: `/context`
+2. Verify context management is enabled: `/config | grep context`
+3. Lower thresholds: `/config context_usage_threshold 0.60`
+
+### Best Practices
+
+1. **OpenAI/Anthropic users**: Defaults are optimized, no changes needed
+2. **Triton/vLLM users**: ALWAYS set `model_max_context_override` to match your deployment
+3. **Monitor with `/context`** during long conversations
+4. **Adjust output tokens** based on your use case:
+   - Code snippets: 2048
+   - Full files: 4096
+   - Large files/detailed explanations: 8192
+5. **Don't over-reserve** output tokens - reduces available conversation space
+
+See [PROVIDER_CONTEXT_RECOMMENDATIONS.md](../PROVIDER_CONTEXT_RECOMMENDATIONS.md) for detailed provider-specific guidance.
 
 ## Available Tools
 
@@ -311,10 +601,11 @@ Use these commands during a Kubrick session:
 | `/load <#\|ID>`     | Load a conversation by number (from /list) or ID                        |
 | `/config`           | Show current configuration                                              |
 | `/config KEY VALUE` | Update a configuration setting                                          |
+| `/context`          | **Show context window usage and status** (tokens, thresholds, warnings) |
 | `/delete ID`        | Delete a saved conversation                                             |
 | `/debug`            | Show debug information (conversation ID, message count, provider, etc.) |
 | `/debug prompt`     | Display the full system prompt being used                               |
-| `/help`             | Show all available in-session commands                                  |
+| `/help`             | Show all available in-session commands with examples                    |
 | `exit` or `quit`    | Save conversation and exit Kubrick                                      |
 
 **Loading Conversations:**
@@ -347,9 +638,38 @@ You: /config
 
 # Update config
 You: /config triton_url localhost:9000
+You: /config model_max_context_override 16384
+
+# Check context usage
+You: /context
 
 # Delete old conversation
 You: /delete 20240115_120000
+
+# Show debug info
+You: /debug
+
+# View system prompt
+You: /debug prompt
+```
+
+### Common Configuration Commands
+
+```bash
+# For Triton/vLLM users with custom context
+You: /config model_max_context_override 16384
+You: /config max_output_tokens 2048
+You: /context  # Verify settings
+
+# Adjust context management behavior
+You: /config context_usage_threshold 0.60
+You: /config context_summarization_threshold 0.75
+
+# Increase agent iterations for complex tasks
+You: /config max_iterations 20
+
+# Change provider mid-session (requires restart to take effect)
+You: /config provider openai
 ```
 
 ## Conversation Management

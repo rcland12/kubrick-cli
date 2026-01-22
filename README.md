@@ -1,13 +1,39 @@
 # Kubrick CLI
 
+[![CI](https://github.com/rcland12/kubrick-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/rcland12/kubrick-cli/actions/workflows/ci.yml)
+[![CD](https://github.com/rcland12/kubrick-cli/actions/workflows/cd.yml/badge.svg)](https://github.com/rcland12/kubrick-cli/actions/workflows/cd.yml)
+[![Security](https://github.com/rcland12/kubrick-cli/actions/workflows/security.yml/badge.svg)](https://github.com/rcland12/kubrick-cli/actions/workflows/security.yml)
+[![PyPI version](https://badge.fury.io/py/kubrick-cli.svg)](https://badge.fury.io/py/kubrick-cli)
+[![Python Versions](https://img.shields.io/pypi/pyversions/kubrick-cli.svg)](https://pypi.org/project/kubrick-cli/)
+[![Downloads](https://pepy.tech/badge/kubrick-cli)](https://pepy.tech/project/kubrick-cli)
+[![Docker Pulls](https://img.shields.io/docker/pulls/rcland12/kubrick-cli.svg)](https://hub.docker.com/r/rcland12/kubrick-cli)
+[![Docker Image Size](https://img.shields.io/docker/image-size/rcland12/kubrick-cli/latest.svg)](https://hub.docker.com/r/rcland12/kubrick-cli)
+[![codecov](https://codecov.io/gh/rcland12/kubrick-cli/branch/master/graph/badge.svg)](https://codecov.io/gh/rcland12/kubrick-cli)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/rcland12/kubrick-cli/badge)](https://securityscorecards.dev/viewer/?uri=github.com/rcland12/kubrick-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
 An AI-assisted coding CLI tool powered by your own Triton LLM backend. Like Claude Code, but self-hosted.
 
 ## Installation
 
-### Local Installation
+### PyPI (Recommended)
+
+Install the latest stable release from PyPI:
 
 ```bash
-pip install -e .
+pip install kubrick-cli
+kubrick
+```
+
+### Development Installation
+
+For contributing or testing the latest changes:
+
+```bash
+git clone https://github.com/rcland12/kubrick-cli.git
+cd kubrick-cli
+pip install -e ".[dev]"
 kubrick
 ```
 
@@ -127,18 +153,53 @@ kubrick --load 20240118_143022
 
 - **[WIKI.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/WIKI.md)** - Complete features, commands, and usage guide
 - **[PROVIDERS.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/PROVIDERS.md)** - Multi-provider setup (Triton, OpenAI, Anthropic)
+- **[CONTEXT_MANAGEMENT_QUICKSTART.md](https://github.com/rcland12/kubrick-cli/blob/master/CONTEXT_MANAGEMENT_QUICKSTART.md)** - Context window configuration and troubleshooting
 - **[TRITON.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/TRITON.md)** - Triton backend setup and requirements
 - **[TESTING.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/TESTING.md)** - Testing guide and CI/CD setup
 - **[DOCKER.md](https://github.com/rcland12/kubrick-cli/blob/master/docs/DOCKER.md)** - Docker setup and troubleshooting
 
+## Key Features
+
+### 🎯 Intelligent Context Management
+Kubrick automatically manages conversation length to prevent context overflow and hallucinations:
+- **Automatic trimming** at 75% context usage
+- **LLM-based summarization** at 85% usage
+- **Smart token reservation** for output
+- **Provider-optimized defaults** (OpenAI: 128k, Claude: 200k, Triton: configurable)
+
+**For Triton/vLLM users**: Set your context window to match your model:
+```bash
+kubrick
+/config model_max_context_override 16384  # Match your --max-model-len
+/context  # Check status
+```
+
+See [CONTEXT_MANAGEMENT_QUICKSTART.md](CONTEXT_MANAGEMENT_QUICKSTART.md) for details.
+
+### 🔧 In-Session Commands
+
+Monitor and configure Kubrick while running:
+```bash
+/context   # Show context usage and limits
+/config    # View all configuration
+/help      # Show all available commands
+```
+
 ## Configuration
 
-Config stored at `~/.kubrick/config.json`. Override with environment variables:
+Config stored at `~/.kubrick/config.json`. Override with environment variables or in-session commands:
 
 ```bash
+# Environment variables
 export TRITON_URL=localhost:8000
 export TRITON_MODEL_NAME=llm_decoupled
+
+# In-session configuration
+/config model_max_context_override 16384
+/config max_output_tokens 2048
 ```
+
+See [docs/WIKI.md](docs/WIKI.md) for complete configuration reference.
 
 ## Development
 

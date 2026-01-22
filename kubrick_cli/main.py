@@ -22,6 +22,7 @@ from .providers.factory import ProviderFactory
 from .safety import SafetyConfig, SafetyManager
 from .scheduler import ToolScheduler
 from .tools import ToolExecutor, get_tools_prompt
+from .ui import SessionStats, create_enhanced_prompt
 
 console = Console()
 
@@ -94,10 +95,14 @@ class KubrickCLI:
                 provider_name=self.provider.provider_name,
                 model_name=self.provider.model_name,
                 config=config.get_all(),
+                llm_client=self.provider,  # Pass LLM client for summarization
             )
+            reserved_output = config.get("max_output_tokens", 2048)
+            available = self.context_manager.context_window - reserved_output
             console.print(
                 f"[dim]→ Context management enabled "
-                f"(limit: {self.context_manager.context_window} tokens)[/dim]"
+                f"(limit: {self.context_manager.context_window} tokens, "
+                f"available: {available} tokens)[/dim]"
             )
 
         self.agent_loop = AgentLoop(
@@ -127,6 +132,14 @@ class KubrickCLI:
             "%Y%m%d_%H%M%S"
         )
 
+        # Initialize session statistics and enhanced UI
+        self.session_stats = SessionStats()
+        self.enhanced_prompt = None  # Will be created after conversation_id is set
+
+        # Wrap tool executor to track statistics
+        self._original_tool_execute = self.tool_executor.execute
+        self.tool_executor.execute = self._tracked_tool_execute
+
         if conversation_id:
             loaded = self._load_conversation(conversation_id)
             if loaded:
@@ -145,10 +158,177 @@ class KubrickCLI:
         return [
             {
                 "role": "system",
-                "content": f"""You are Kubrick, an AI coding assistant with agentic \
-capabilities and file system access.
+                "content": f"""You are Kubrick, a professional AI coding assistant with agentic \
+capabilities and file system access. \
+You write production-quality code following industry best practices.
 
 Current working directory: {self.tool_executor.working_dir}
+
+# Core Principles
+
+You are a PROFESSIONAL software engineer. Every piece of code you write should be:
+- Production-ready and robust
+- Well-documented with clear docstrings
+- Type-hinted for clarity and IDE support
+- Error-handled appropriately
+- Following language-specific best practices
+- Clean, readable, and maintainable
+
+# Code Quality Standards
+
+## Python Code Requirements
+1. **Type Hints**: Use type hints for all function parameters and return values
+2. **Docstrings**: Write clear docstrings (Google style) for all classes and functions
+3. **Error Handling**: Use try-except blocks where appropriate, with specific exception types
+4. **Logging**: Use proper logging instead of print statements for production code
+5. **Structure**: Follow PEP 8 style guide
+6. **Validation**: Validate inputs and handle edge cases
+7. **Modern Python**: Use modern Python features (f-strings, dataclasses, etc.)
+
+## Code Organization
+- Group related functionality logically
+- Use meaningful variable and function names
+- Keep functions focused (single responsibility)
+- Add comments for complex logic
+- Use constants for magic numbers/strings
+
+## Example of GOOD Code:
+```python
+from typing import List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DataProcessor:
+    \"\"\"Processes and validates input data.
+
+    This class handles data transformation and validation
+    with comprehensive error handling.
+
+    Attributes:
+        max_size: Maximum allowed data size
+        strict_mode: Whether to raise on validation errors
+    \"\"\"
+
+    def __init__(self, max_size: int = 1000, strict_mode: bool = True):
+        \"\"\"Initialize the processor.
+
+        Args:
+            max_size: Maximum number of items to process
+            strict_mode: If True, raise exceptions on validation errors
+        \"\"\"
+        self.max_size = max_size
+        self.strict_mode = strict_mode
+        logger.info(f"Initialized DataProcessor (max_size={{max_size}})")
+
+    def process_items(self, items: List[str]) -> List[str]:
+        \"\"\"Process a list of items with validation.
+
+        Args:
+            items: List of strings to process
+
+        Returns:
+            List of processed items
+
+        Raises:
+            ValueError: If items exceed max_size in strict mode
+        \"\"\"
+        if len(items) > self.max_size:
+            msg = f"Items ({{len(items)}}) exceeds max_size ({{self.max_size}})"
+            if self.strict_mode:
+                raise ValueError(msg)
+            logger.warning(msg)
+            items = items[:self.max_size]
+
+        processed = []
+        for item in items:
+            try:
+                processed.append(self._process_single(item))
+            except Exception as e:
+                logger.error(f"Failed to process item: {{e}}")
+                if self.strict_mode:
+                    raise
+
+        return processed
+
+    def _process_single(self, item: str) -> str:
+        \"\"\"Process a single item.\"\"\"
+        return item.strip().lower()
+```
+
+## Example of BAD Code (DO NOT WRITE THIS):
+```python
+# Missing docstrings, no type hints, no error handling
+class Processor:
+    def __init__(self, size):
+        self.size = size
+
+    def process(self, items):
+        result = []
+        for i in items:
+            result.append(i.strip().lower())
+        return result
+```
+
+# When Writing Code
+
+## For Scripts and Utilities
+- Always add `if __name__ == "__main__":` guard
+- Use argparse for command-line arguments
+- Add proper error handling and exit codes
+- Include usage examples in docstrings
+
+## For Libraries and Modules
+- Design clear, intuitive APIs
+- Raise specific exceptions (ValueError, TypeError, etc.)
+- Validate inputs at API boundaries
+- Write defensive code that handles edge cases
+
+## For Classes
+- Use properties for computed attributes
+- Implement `__repr__` and `__str__` for debugging
+- Consider using dataclasses for simple data containers
+- Follow SOLID principles
+
+## Error Handling Best Practices
+```python
+# DO THIS - Specific exceptions with context
+try:
+    result = process_data(user_input)
+except ValueError as e:
+    logger.error(f"Invalid input: {{e}}")
+    raise
+except ConnectionError as e:
+    logger.error(f"Connection failed: {{e}}")
+    return None
+
+# NOT THIS - Bare except that hides errors
+try:
+    result = process_data(user_input)
+except:
+    pass
+```
+
+## Professional Touches
+1. **Configuration over hardcoding**: Use constants or config files
+2. **Logging levels**: DEBUG for details, INFO for progress, ERROR for problems
+3. **Resource cleanup**: Use context managers (with statements)
+4. **Path handling**: Use pathlib.Path instead of string concatenation
+5. **Testing mindset**: Write code that's easy to test
+
+## Code Review Checklist (Apply to Your Own Code!)
+- [ ] All functions have type hints
+- [ ] All public functions have docstrings
+- [ ] Error cases are handled appropriately
+- [ ] No hardcoded values (use constants)
+- [ ] Variable names are descriptive
+- [ ] Complex logic has explanatory comments
+- [ ] No bare except clauses
+- [ ] Resources are properly cleaned up
+- [ ] Code follows PEP 8
+
+Remember: You're not writing quick scripts - you're writing production code that \
+other engineers will read, maintain, and extend. Make them proud!
 
 # Agentic Behavior
 
@@ -162,9 +342,27 @@ You are not limited to a single response.
 3. Continue calling tools as needed
 4. Signal completion when done
 
-# Completion Signal
+# Completion Signal - CRITICAL
 
-When you've completed the task, say "TASK_COMPLETE" followed by a summary of what you accomplished.
+**You MUST say "TASK_COMPLETE" when you finish a task.** This prevents unnecessary repetition.
+
+**When to say TASK_COMPLETE:**
+- ✅ After answering a question fully
+- ✅ After creating/editing files as requested
+- ✅ After explaining a concept completely
+- ✅ After writing creative content (poems, stories, etc.)
+- ✅ When the user's request has been fulfilled
+- ✅ When you've verified your changes work correctly
+
+**Example responses:**
+- "Here's a poem about the Titanic: [poem] TASK_COMPLETE"
+- "I've created the file and verified it exists. TASK_COMPLETE"
+- "The bug is fixed and tests pass. TASK_COMPLETE"
+
+**DO NOT:**
+- ❌ Keep working after the task is done
+- ❌ Repeat the same action multiple times
+- ❌ Wait to say TASK_COMPLETE - say it immediately when done
 
 # Tool Call Format (EXACT SYNTAX REQUIRED)
 
@@ -344,6 +542,48 @@ Assistant: I'll create the README and verify it was written.
             return data.get("messages", [])
         return None
 
+    def _tracked_tool_execute(self, tool_name: str, parameters: dict):
+        """Wrapper around tool execution to track statistics."""
+        result = self._original_tool_execute(tool_name, parameters)
+
+        # Track statistics based on tool type
+        if result.get("success"):
+            if tool_name == "write_file":
+                # Check if file exists to determine if it's creation or modification
+                # from pathlib import Path
+
+                # file_path = parameters.get("file_path", "")
+                # full_path = Path(self.tool_executor.working_dir) / file_path
+                # Note: File will exist after write, so this checks before operation
+                # We'll count all writes as creates for now (could be enhanced)
+                self.session_stats.files_created += 1
+
+                # Estimate lines added
+                content = parameters.get("content", "")
+                self.session_stats.lines_added += content.count("\n") + 1
+
+            elif tool_name == "edit_file":
+                self.session_stats.files_modified += 1
+
+                # Estimate line changes
+                old_string = parameters.get("old_string", "")
+                new_string = parameters.get("new_string", "")
+                old_lines = old_string.count("\n") + 1
+                new_lines = new_string.count("\n") + 1
+
+                if new_lines > old_lines:
+                    self.session_stats.lines_added += new_lines - old_lines
+                else:
+                    self.session_stats.lines_deleted += old_lines - new_lines
+
+            elif tool_name == "read_file":
+                self.session_stats.files_read += 1
+
+            elif tool_name == "run_bash":
+                self.session_stats.commands_executed += 1
+
+        return result
+
     def _save_conversation(self):
         """Save current conversation to disk."""
         if self.config.get("auto_save_conversations", True):
@@ -357,7 +597,7 @@ Assistant: I'll create the README and verify it was written.
 
     def parse_tool_calls(self, text: str) -> list:
         """
-        Parse tool calls from LLM response.
+        Parse tool calls from LLM response with robust error handling.
 
         Args:
             text: Response text from LLM
@@ -367,21 +607,34 @@ Assistant: I'll create the README and verify it was written.
         """
         tool_calls = []
 
+        # Pattern 1: Standard ```tool_call format
         pattern = r"```tool_call\s*\n(.*?)\n```"
         matches = re.findall(pattern, text, re.DOTALL)
 
         for match in matches:
             try:
-                tool_data = json.loads(match.strip())
+                # Clean up common JSON formatting issues
+                cleaned = match.strip()
+                # Remove trailing commas before closing braces
+                cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
+
+                tool_data = json.loads(cleaned)
                 tool_name = tool_data.get("tool")
                 parameters = tool_data.get("parameters", {})
                 if tool_name:
                     tool_calls.append((tool_name, parameters))
             except json.JSONDecodeError as e:
-                console.print(f"[red]Failed to parse tool call: {e}[/red]")
+                console.print(f"[red]Failed to parse tool call JSON: {e}[/red]")
+                console.print(f"[dim]Content: {match[:100]}...[/dim]")
+                # Don't continue - skip this malformed tool call
+                continue
+            except Exception as e:
+                console.print(f"[red]Unexpected error parsing tool call: {e}[/red]")
                 continue
 
+        # Pattern 2: Fallback for JSON without markdown fences
         if not tool_calls:
+            # Look for JSON objects that look like tool calls
             json_pattern = (
                 r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*\{[^}]*\}\s*\}'
             )
@@ -393,17 +646,26 @@ Assistant: I'll create the README and verify it was written.
                     "Parsing anyway, but please use ```tool_call format.[/yellow]"
                 )
 
+                # More permissive pattern for nested JSON
                 full_json_pattern = (
                     r'(\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{.*?\}\s*\})'
                 )
                 for match in re.finditer(full_json_pattern, text, re.DOTALL):
                     try:
-                        tool_data = json.loads(match.group(1))
+                        cleaned = match.group(1).strip()
+                        # Clean up trailing commas
+                        cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
+
+                        tool_data = json.loads(cleaned)
                         tool_name = tool_data.get("tool")
                         parameters = tool_data.get("parameters", {})
                         if tool_name:
                             tool_calls.append((tool_name, parameters))
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
+                        console.print(f"[yellow]Skipping malformed JSON: {e}[/yellow]")
+                        continue
+                    except Exception as e:
+                        console.print(f"[yellow]Unexpected error: {e}[/yellow]")
                         continue
 
         return tool_calls
@@ -513,6 +775,10 @@ Assistant: I'll create the README and verify it was written.
 
         stream_options = exec_config.hyperparameters.copy()
 
+        # Add max_tokens if context manager is enabled
+        if self.context_manager and "max_tokens" not in stream_options:
+            stream_options["max_tokens"] = self.context_manager.max_output_tokens
+
         for chunk in self.provider.generate_streaming(
             self.messages, stream_options=stream_options
         ):
@@ -587,6 +853,18 @@ Assistant: I'll create the README and verify it was written.
 
         self.agent_loop.max_iterations = original_max_iterations
 
+        # Update stats
+        self.session_stats.iterations += result.get("iterations", 0)
+        self.session_stats.tool_calls += result.get("tool_calls", 0)
+
+        # Update token count (estimate from all messages)
+        if self.context_manager:
+            from .context_manager import TokenCounter
+
+            self.session_stats.total_tokens = TokenCounter.count_messages_tokens(
+                self.messages, self.provider.provider_name
+            )
+
         if result["success"]:
             console.print(
                 f"\n[dim]Completed in {result['iterations']} iteration(s) "
@@ -597,13 +875,22 @@ Assistant: I'll create the README and verify it was written.
 
     def run(self):
         """Run the interactive CLI."""
+        # Initialize enhanced prompt now that conversation_id is set
+        self.enhanced_prompt = create_enhanced_prompt(
+            working_dir=self.tool_executor.working_dir,
+            stats=self.session_stats,
+            context_manager=self.context_manager,
+            conversation_id=self.conversation_id,
+        )
+
         console.print(
             Panel.fit(
                 "[bold cyan]Kubrick CLI[/bold cyan]\n"
                 f"Working directory: {self.tool_executor.working_dir}\n"
                 f"Conversation ID: {self.conversation_id}\n"
                 "Type your questions or commands. Type 'exit' or 'quit' to exit.\n"
-                "Type '/help' to see all available in-session commands.",
+                "Type '/help' to see all available in-session commands.\n"
+                "\n[dim]Press Enter to submit, Alt+Enter for new line, Ctrl+D also submits[/dim]",
                 border_style="cyan",
             )
         )
@@ -618,9 +905,12 @@ Assistant: I'll create the README and verify it was written.
 
         while True:
             try:
-                user_input = Prompt.ask("\n[bold green]You[/bold green]")
+                # Use enhanced prompt with multiline support
+                console.print()  # Add spacing
+                user_input = self.enhanced_prompt.get_input("You")
 
                 self.interrupt_count = 0
+                self.session_stats.input_chars += len(user_input)
 
                 if not user_input.strip():
                     continue
@@ -882,23 +1172,61 @@ Assistant: I'll create the README and verify it was written.
                 """
 [bold cyan]In-Session Commands:[/bold cyan]
 
-[green]/save[/green]              - Save the current conversation
-[green]/list [N][/green]          - List saved conversations (default: 20)
-[green]/load <#|ID>[/green]       - Load a conversation by number or ID
-[green]/config[/green]            - Show current configuration
-[green]/config KEY VALUE[/green]  - Set a configuration value
-[green]/delete ID[/green]         - Delete a conversation
-[green]/context[/green]           - Show context window usage and status
-[green]/debug[/green]             - Show debug information
-[green]/debug prompt[/green]      - Show the system prompt
-[green]/help[/green]              - Show this help message
-[green]exit[/green] or [green]quit[/green]     - Save conversation and exit
+[bold yellow]Conversation Management:[/bold yellow]
+  [green]/save[/green]              - Manually save the current conversation
+  [green]/list [N][/green]          - List saved conversations (default: 20, \
+shows numbered list)
+  [green]/load <#|ID>[/green]       - Load a conversation by number (from /list) or ID
+                        Example: [dim]/load 1[/dim] or [dim]/load 20240118_143022[/dim]
+  [green]/delete ID[/green]         - Delete a saved conversation by ID
+
+[bold yellow]Configuration:[/bold yellow]
+  [green]/config[/green]            - Show current configuration
+  [green]/config KEY VALUE[/green]  - Update a configuration setting
+                        Example: [dim]/config max_iterations 20[/dim]
+
+[bold yellow]Context Management:[/bold yellow]
+  [green]/context[/green]           - Show context window usage, limits, and warnings
+                        Displays: tokens used, window size, usage %, thresholds
+
+[bold yellow]Debugging:[/bold yellow]
+  [green]/debug[/green]             - Show debug information (conversation ID, message count, etc.)
+  [green]/debug prompt[/green]      - Display the full system prompt being used
+
+[bold yellow]General:[/bold yellow]
+  [green]/help[/green]              - Show this help message
+  [green]exit[/green] or [green]quit[/green]     - Save conversation and exit Kubrick
+
+[bold cyan]Common Configuration Examples:[/bold cyan]
+
+[yellow]For Triton/vLLM users with custom context:[/yellow]
+  /config model_max_context_override 16384
+  /config max_output_tokens 2048
+  /context  [dim]# Verify your settings[/dim]
+
+[yellow]Adjust context management:[/yellow]
+  /config context_usage_threshold 0.60        [dim]# Trim earlier (more aggressive)[/dim]
+  /config context_summarization_threshold 0.75
+  /config max_output_tokens 4096              [dim]# For longer responses[/dim]
+
+[yellow]Agent behavior:[/yellow]
+  /config max_iterations 20                   [dim]# Allow more iterations[/dim]
+  /config max_tools_per_turn 10               [dim]# Allow more tools per turn[/dim]
+  /config enable_parallel_tools false         [dim]# Disable parallel execution[/dim]
 
 [bold cyan]Tips:[/bold cyan]
   • Use [cyan]/list[/cyan] to see numbered conversations, \
 then [cyan]/load 1[/cyan] to load by number
-  • You can also use [cyan]--load[/cyan] when starting: \
-[dim]kubrick --load 20240118_143022[/dim]
+  • Use [cyan]/context[/cyan] regularly to monitor token usage during long conversations
+  • For Triton/vLLM: ALWAYS set [cyan]model_max_context_override[/cyan] to match your \
+--max-model-len
+  • OpenAI/Anthropic users: Defaults are optimized (128k/200k context)
+  • Type [cyan]/config[/cyan] to see all available configuration options
+
+[bold cyan]Documentation:[/bold cyan]
+  • Full docs: [dim]docs/WIKI.md[/dim]
+  • Context management guide: [dim]CONTEXT_MANAGEMENT_QUICKSTART.md[/dim]
+  • Provider setup: [dim]docs/PROVIDERS.md[/dim]
             """
             )
 

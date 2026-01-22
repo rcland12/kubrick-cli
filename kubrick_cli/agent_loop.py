@@ -70,18 +70,42 @@ class CompletionDetector:
         """
         text_lower = text.lower()
 
+        # Expanded patterns to catch more completions
         conclusive_patterns = [
             r"\b(done|completed|finished|ready)\b",
             r"\b(successfully|all set|good to go)\b",
-            r"\bhere(?:'s| is) (?:the |a )?(?:summary|result)",
+            r"\bhere(?:'s| is) (?:the |a )?(?:summary|result|poem|story|explanation)",
             r"\b(?:task|work|changes) (?:is |are )?(?:complete|done|finished)",
             r"\blet me know if you need",
             r"\bthat(?:'s| should do it)",
             r"\beverything(?:'s| is) (?:set|ready|done)",
+            r"\bhope (?:this|that) helps",
+            r"\b(?:enjoy|hope you (?:like|enjoy))",
+            r"\b(?:there you go|here you are)",
+            r"\bfeel free to",
+            r"\bif you (?:need|want) (?:anything|more)",
         ]
 
         for pattern in conclusive_patterns:
             if re.search(pattern, text_lower):
+                return True
+
+        # Check if response is substantial and complete (for creative outputs)
+        # If it's a long response (>200 chars) with no tool calls, likely complete
+        if len(text) > 200:
+            # Check for creative content markers
+            creative_markers = [
+                r"\b(?:poem|story|joke|explanation)\b",
+                r"\n\n",  # Multiple paragraphs suggest complete response
+                r"[.!?]\s*$",  # Ends with proper punctuation
+            ]
+
+            marker_count = sum(
+                1 for marker in creative_markers if re.search(marker, text_lower)
+            )
+
+            # If response is long and has at least 2 creative markers, consider it complete
+            if marker_count >= 2:
                 return True
 
         return False
@@ -166,12 +190,30 @@ class AgentLoop:
                 f"\n[dim]→ Agent iteration {iteration}/{self.max_iterations}[/dim]"
             )
 
+            # Check and manage context before each LLM call
+            if self.context_manager:
+                messages, context_info = self.context_manager.check_and_manage(
+                    messages, reserve_output_tokens=True
+                )
+                if context_info.get("action_taken"):
+                    console.print(
+                        f"[yellow]→ Context managed: {context_info['action_taken']} "
+                        f"({context_info['tokens_before']} → "
+                        f"{context_info['tokens_after']} tokens, "
+                        f"reserved {context_info['reserved_output_tokens']} for output)[/yellow]"
+                    )
+
             console.print("[bold cyan]Assistant:[/bold cyan]")
             chunks = []
 
+            # Add max_tokens to stream_options if context manager is enabled
+            stream_opts = self.stream_options.copy()
+            if self.context_manager and "max_tokens" not in stream_opts:
+                stream_opts["max_tokens"] = self.context_manager.max_output_tokens
+
             try:
                 for chunk in self.llm_client.generate_streaming(
-                    messages, stream_options=self.stream_options
+                    messages, stream_options=stream_opts
                 ):
                     console.print(chunk, end="")
                     chunks.append(chunk)
@@ -211,6 +253,23 @@ class AgentLoop:
                     "iterations": iteration,
                     "tool_calls": total_tool_calls,
                 }
+
+            # If no tool calls in response, check if we should stop
+            # (Prevents infinite loops for simple conversational responses)
+            if not tool_calls:
+                # If this is a substantial response (>100 chars) and iteration > 1,
+                # it's likely the agent has finished but forgot to say TASK_COMPLETE
+                if iteration > 1 and len(response_text) > 100:
+                    console.print(
+                        "\n[yellow]→ No tool calls and substantial response. "
+                        "Treating as complete to prevent repetition.[/yellow]"
+                    )
+                    return {
+                        "success": True,
+                        "completion_reason": "no_tools_with_content",
+                        "iterations": iteration,
+                        "tool_calls": total_tool_calls,
+                    }
 
             if tool_calls:
                 if len(tool_calls) > self.max_tools_per_turn:
