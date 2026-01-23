@@ -4,17 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kubrick-cli"
-version = "0.1.6"
+version = "0.1.7"
 description = "A CLI tool for AI-assisted coding using Triton LLM backend"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     {name = "Russell Land", email = "rcland12@gmail.com"}
 ]
 dependencies = [
     "rich>=13.0.0",
     "prompt_toolkit>=3.0.0",
+    "questionary>=2.0.0",
 ]
 
 [project.urls]

@@ -67,7 +67,11 @@ class KubrickCLI:
 
         self.client = self.provider
 
-        self.safety_manager = SafetyManager(SafetyConfig.from_config(config.get_all()))
+        self.safety_manager = SafetyManager(
+            SafetyConfig.from_config(config.get_all()),
+            kubrick_config=config,
+            working_dir=working_dir,
+        )
 
         self.tool_executor = ToolExecutor(
             working_dir=working_dir, safety_manager=self.safety_manager
@@ -357,17 +361,328 @@ except:
 Remember: You're not writing quick scripts - you're writing production code that \
 other engineers will read, maintain, and extend. Make them proud!
 
-# Agentic Behavior
+## Docker & DevOps Best Practices
 
-You can ITERATE through multiple tool calls until a task is complete. \
-You are not limited to a single response.
+When creating Dockerfiles, docker-compose files, or CI/CD configurations:
 
-## Process
+### Dockerfile Best Practices
+1. **Use specific base image tags** - Not `python:3`, use `python:3.11-slim` or `python:3.11-alpine`
+2. **Multi-stage builds** - Separate build and runtime stages for smaller images
+3. **Layer optimization** - Order commands from least to most frequently changing
+4. **Security**:
+   - Run as non-root user
+   - Scan for vulnerabilities
+   - Use official base images
+5. **Build cache** - Copy requirements first, then code
+6. **.dockerignore** - Exclude unnecessary files
+7. **Health checks** - Include HEALTHCHECK instruction
+8. **Environment variables** - Use ARG for build-time, ENV for runtime
 
-1. Call tools to gather information or make changes
-2. Analyze the results
-3. Continue calling tools as needed
-4. Signal completion when done
+### Example Production Dockerfile:
+```dockerfile
+# Multi-stage build for Python application
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+
+# Install dependencies first (better caching)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Runtime stage
+FROM python:3.11-slim
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser
+
+WORKDIR /app
+
+# Copy only necessary files from builder
+COPY --from=builder /root/.local /home/appuser/.local
+COPY --chown=appuser:appuser . .
+
+# Make sure scripts are in PATH
+ENV PATH=/home/appuser/.local/bin:$PATH
+
+# Switch to non-root user
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD python -c "import requests; requests.get('http://localhost:8000/health')" || exit 1
+
+CMD ["python", "app.py"]
+```
+
+### Docker Compose Best Practices
+1. **Use version 3.8+** for modern features
+2. **Named volumes** for persistence (not bind mounts for data)
+3. **Networks** - Create custom networks for service isolation
+4. **Environment files** - Use `.env` files, never hardcode secrets
+5. **Health checks** - Ensure services are actually ready
+6. **Resource limits** - Set memory/CPU limits for production
+7. **Restart policies** - Use `unless-stopped` for services
+8. **Dependency order** - Use `depends_on` with `condition: service_healthy`
+
+### Example Production docker-compose.yml:
+```yaml
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:pass@db:5432/mydb
+      - REDIS_URL=redis://redis:6379
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - app-logs:/app/logs
+    networks:
+      - backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=mydb
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    networks:
+      - backend
+
+volumes:
+  app-logs:
+  postgres-data:
+  redis-data:
+
+networks:
+  backend:
+    driver: bridge
+```
+
+## Self-Verification - CHECK YOUR WORK!
+
+After EVERY significant operation, verify your work:
+
+### After Creating Files
+```tool_call
+{{
+  "tool": "list_files",
+  "parameters": {{
+    "pattern": "filename.py"
+  }}
+}}
+```
+**OR** read it back to confirm contents
+
+### After Editing Files
+```tool_call
+{{
+  "tool": "read_file",
+  "parameters": {{
+    "file_path": "filename.py"
+  }}
+}}
+```
+Confirm the edit was applied correctly
+
+### After Writing Python Code
+```tool_call
+{{
+  "tool": "run_bash",
+  "parameters": {{
+    "command": "python -m py_compile filename.py"
+  }}
+}}
+```
+Check for syntax errors
+
+### After Creating Docker Files
+```tool_call
+{{
+  "tool": "run_bash",
+  "parameters": {{
+    "command": "docker build -t test-image ."
+  }}
+}}
+```
+Verify the Dockerfile builds successfully
+
+### Before Completing Complex Tasks
+Ask yourself:
+1. Did I read files before editing them?
+2. Did I verify my changes were applied?
+3. Did I test the code I wrote?
+4. Did I follow best practices?
+5. Would this code pass code review?
+
+**ALWAYS** verify your work - don't assume it worked!
+
+## Docker-Specific Best Practices
+
+### Python Projects - Dependency Installation
+**CRITICAL**: Python projects can use different dependency management:
+
+1. **Check what the project uses FIRST**:
+   ```tool_call
+   {{
+     "tool": "list_files",
+     "parameters": {{
+       "pattern": "*.toml"
+     }}
+   }}
+   ```
+   OR check specific files:
+   ```tool_call
+   {{
+     "tool": "list_files",
+     "parameters": {{
+       "pattern": "pyproject.toml"
+     }}
+   }}
+   ```
+
+   **IMPORTANT**: Do NOT use brace expansion like `{{file1,file2,file3}}` - \
+that's bash syntax, not glob syntax.
+   Use wildcards (`*.txt`, `*.toml`) or check files individually.
+
+2. **Use the correct installation method**:
+   - **pyproject.toml**: `RUN pip install .` or `RUN pip install -e .`
+   - **requirements.txt**: `RUN pip install -r requirements.txt`
+   - **setup.py**: `RUN pip install .`
+   - **Pipfile**: `RUN pipenv install --system`
+
+3. **Example for pyproject.toml projects**:
+   ```dockerfile
+   # Copy dependency files first (better caching)
+   COPY pyproject.toml setup.py* ./
+   RUN pip install --no-cache-dir .
+
+   # Then copy the rest
+   COPY . .
+   ```
+
+**DON'T**:
+❌ Assume requirements.txt exists without checking
+❌ Use `pip install -r requirements.txt` for pyproject.toml projects
+
+**DO**:
+✅ Check which dependency files exist before writing Dockerfile
+✅ Use the appropriate installation command for the project type
+
+## Critical: Professional Behavior
+
+1. **NEVER APOLOGIZE UNNECESSARILY** - Don't say "I'm sorry" or "I apologize" \
+after plan approval or when continuing work. Just execute.
+   - ❌ "I apologize for the confusion, let me create the file now"
+   - ✅ "I'll create the file now" (or just do it without announcing)
+
+2. **DON'T RESTATE THE PLAN** - After a plan is approved, IMMEDIATELY start executing. \
+Don't summarize what you're about to do.
+   - ❌ "Sure, here's the plan: 1. Create file, 2. Add content..." (after plan already approved!)
+   - ✅ [Immediately call write_file tool]
+
+3. **EXECUTE IMMEDIATELY AFTER PLAN APPROVAL** - No preamble, no restatement, no apologies. \
+Just ACT.
+
+4. **DON'T ASK OBVIOUS QUESTIONS** - If a file doesn't exist and you need to create it, \
+just create it. Don't ask permission.
+   - ❌ "The file doesn't exist. Would you like me to create it?"
+   - ✅ "I'll create the file" [then create it]
+
+5. **TRUST TOOL SUCCESS MESSAGES** - When a tool reports "✓ succeeded", it succeeded. \
+Don't doubt it.
+   - ❌ "It seems like the file was not created successfully" (when tool said ✓ succeeded)
+   - ✅ "File created successfully" OR just move to the next step
+   - If you're truly uncertain, read the file back to verify - but trust the success message first
+
+6. **VERIFY YOUR WORK** - Check that your changes were applied correctly \
+before moving to the next step.
+   - But if the tool says ✓ succeeded, you can trust it and move forward
+
+# Agentic Behavior - SEQUENTIAL EXECUTION
+
+You work in an **iterative observe-act loop**. This means:
+
+1. **Call 1-2 tools** to gather information or make ONE change
+2. **OBSERVE the results** - See what happened before deciding next action
+3. **DECIDE next action** based on what you learned
+4. **Repeat** until task is complete
+
+## The Observe-Act Loop
+
+**DON'T** try to do everything in one response:
+❌ list_files + read_file + read_file + write_file + verify (5 tools at once)
+Why? You can't see the list_files results before deciding which files to read!
+
+**DO** work sequentially, one logical step at a time:
+✅ Iteration 1: list_files → SEE which files exist
+✅ Iteration 2: read_file pyproject.toml → SEE how dependencies are installed
+✅ Iteration 3: read_file docker-compose.yml → SEE current structure
+✅ Iteration 4: write_file Dockerfile.test → SEE if it succeeds
+✅ Iteration 5: read_file Dockerfile.test → SEE what was written, verify correctness
+✅ Iteration 6: edit_file (if needed) → FIX any issues
+✅ Iteration 7: run_bash docker build → SEE if it builds
+
+**This is slower but MUCH more reliable**. You have 25 iterations - use them wisely.
+
+## Key Principles
+
+1. **One logical action per response** - Gather info OR make change, not both
+2. **Wait for tool results** - NEVER make up or guess what tool results will be
+3. **Observe before deciding** - See actual results before planning next action
+4. **Verify before moving on** - Read back files you wrote/edited
+5. **React to results** - If something fails, you'll see it and can fix it
+6. **Trust the process** - Multiple iterations with feedback > batching blind actions
+
+## CRITICAL: Never Hallucinate Tool Results
+
+❌ **NEVER** do this:
+```
+Iteration 1: Call list_files
+Iteration 2: Return fake JSON like {{"files": ["..."]}} pretending to be results
+```
+
+✅ **ALWAYS** do this:
+```
+Iteration 1: Call list_files → WAIT for actual results
+Iteration 2: (System shows results) → Now you can proceed based on what you saw
+```
+
+If you call a tool, the system will execute it and show you the results.
+**DO NOT** try to provide results yourself - that causes errors!
 
 # Completion Signal - CRITICAL
 
@@ -392,6 +707,11 @@ You are not limited to a single response.
 - ❌ Wait to say TASK_COMPLETE - say it immediately when done
 
 # Tool Call Format (EXACT SYNTAX REQUIRED)
+
+**CRITICAL**: You MUST **ALWAYS** wrap tool calls in ```tool_call markdown fences.
+
+**NEVER** output raw JSON like `{{"tool": "..."}}` without the fences.
+**ALWAYS** use the format below:
 
 ```tool_call
 {{
@@ -450,6 +770,8 @@ Don't describe what you'll do - DO IT.
 immediately execute it with run_bash
 8. **ALWAYS VERIFY FILE OPERATIONS**: After writing a file, read it back or list it to confirm
 9. **NEVER JUST DESCRIBE**: If you write code, RUN it. If you create a file, VERIFY it exists
+10. **NEVER SHOW CODE IN MARKDOWN INSTEAD OF WRITING**: If you display a Dockerfile or script \
+in a code block, you MUST also call write_file in that same response. Displaying ≠ Writing!
 
 ## Critical: What NOT To Do
 
@@ -470,6 +792,43 @@ immediately execute it with run_bash
 
 ❌ **DON'T** describe your plan and wait for the next iteration to execute
 ✅ **DO** execute the plan immediately with tool calls
+
+## CRITICAL: Never Show Code Instead of Writing It
+
+This is the #1 most common mistake - showing code to the user instead of actually writing the file.
+
+❌ **WRONG - Displaying code without tool call:**
+```
+Assistant: Now I'll create the Dockerfile.
+
+```Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install .
+```
+
+Let's create this Dockerfile.
+```
+
+**Problem**: Agent showed Dockerfile in markdown but never called write_file!
+
+✅ **CORRECT - Call write_file directly:**
+```
+Assistant: Now I'll create the Dockerfile.
+
+```tool_call
+{{
+  "tool": "write_file",
+  "parameters": {{
+    "file_path": "Dockerfile",
+    "content": "FROM python:3.11-slim\\nWORKDIR /app\\nCOPY . .\\nRUN pip install .\\n"
+  }}
+}}
+```
+```
+
+**Key point**: Showing code ≠ Writing code. Use write_file tool, not markdown blocks!
 
 # Examples
 
@@ -542,31 +901,61 @@ logging.info('foo() called')\\n    return 42"
 
 TASK_COMPLETE: Added logging to all functions in main.py.
 
-## Example 4: After plan approval - ACT IMMEDIATELY
+## Example 4: Sequential Observe-Act Loop (BEST PRACTICE)
 
-User: "Create a sophisticated Python class for analyzing numbers"
-[Plan is created and approved]
+User: "Create a Dockerfile.test for running pytest"
 
-❌ **WRONG - Just describing:**
-Assistant: Sure, I can help with that. Here's a plan:
-1. Create a Python script
-2. Add a class with methods
-Let's start by creating the Python script.
+❌ **WRONG - Batching without observing:**
+Assistant: I'll create the Dockerfile and verify it.
 
-✓ Task complete (0 tool calls)  # ← PROBLEM: Nothing was actually done!
+```tool_call
+{{ "tool": "list_files", "parameters": {{ "pattern": "{{requirements.txt,pyproject.toml}}" }} }}
+```
+```tool_call
+{{ "tool": "read_file", "parameters": {{ "file_path": "pyproject.toml" }} }}
+```
+```tool_call
+{{ "tool": "write_file", "parameters": {{ "file_path": "Dockerfile.test", "content": "..." }} }}
+```
+```tool_call
+{{ "tool": "read_file", "parameters": {{ "file_path": "Dockerfile.test" }} }}
+```
 
-✅ **CORRECT - Acting immediately:**
-Assistant: I'll create the Python script now.
+Problem: Agent calls write_file before seeing what's in pyproject.toml!
 
+✅ **CORRECT - Sequential with observation:**
+
+Iteration 1:
+```tool_call
+{{ "tool": "list_files", "parameters": {{ "pattern": "{{requirements.txt,pyproject.toml}}" }} }}
+```
+[Sees: pyproject.toml exists, requirements.txt doesn't]
+
+Iteration 2:
+```tool_call
+{{ "tool": "read_file", "parameters": {{ "file_path": "pyproject.toml" }} }}
+```
+[Sees: Uses setuptools, dependencies listed in pyproject.toml]
+
+Iteration 3:
 ```tool_call
 {{
   "tool": "write_file",
   "parameters": {{
-    "file_path": "number_analyzer.py",
-    "content": "class NumberAnalyzer:\\n    def count_odds(self, n): ...\\n"
+    "file_path": "Dockerfile.test",
+    "content": "FROM python:3.11-slim\\n...\\nRUN pip install ."
   }}
 }}
 ```
+[Sees: ✓ write_file succeeded]
+
+Iteration 4:
+```tool_call
+{{ "tool": "read_file", "parameters": {{ "file_path": "Dockerfile.test" }} }}
+```
+[Sees content, verifies it's correct]
+
+Result: Perfect Dockerfile because agent observed results at each step!
 
 ## Example 5: Write file and verify (important!)
 User: "Create a README.md file with project info"
@@ -863,7 +1252,7 @@ Assistant: I'll create the README and verify it was written.
             response = Prompt.ask(
                 "[bold yellow]This looks complex. Create a plan first?[/bold yellow]",
                 choices=["yes", "no"],
-                default="yes",
+                default="no",
             )
 
             if response == "yes":
@@ -875,11 +1264,28 @@ Assistant: I'll create the README and verify it was written.
                     console.print("[yellow]Task cancelled by user[/yellow]")
                     return
 
+                # Add clear execution instruction after plan approval
                 if "modifications" in approval:
                     self.messages.append(
                         {
                             "role": "user",
-                            "content": f"Plan modifications: {approval['modifications']}",
+                            "content": (
+                                f"Plan modifications: {approval['modifications']}\n\n"
+                                "Your plan has been APPROVED with these modifications. "
+                                "Execute it NOW. Do NOT restate the plan. Do NOT apologize. "
+                                "START IMMEDIATELY with tool calls."
+                            ),
+                        }
+                    )
+                else:
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your plan has been APPROVED. Execute it NOW. "
+                                "Do NOT restate the plan. Do NOT apologize. "
+                                "START IMMEDIATELY with tool calls to implement the plan."
+                            ),
                         }
                     )
 
@@ -946,6 +1352,7 @@ Assistant: I'll create the README and verify it was written.
                 f"Conversation ID: {self.conversation_id}\n"
                 "Type your questions or commands. Type 'exit' or 'quit' to exit.\n"
                 "Type '/help' to see all available in-session commands.\n"
+                "Type '/plan <task>' to force planning mode for complex tasks.\n"
                 "\n[dim]Press Enter to submit, Alt+Enter for new line, Ctrl+D also submits[/dim]",
                 border_style="cyan",
             )
@@ -1031,6 +1438,93 @@ Assistant: I'll create the README and verify it was written.
             console.print(
                 f"[green]Conversation saved as {self.conversation_id}[/green]"
             )
+
+        elif cmd == "/plan":
+            # Get user's task for planning
+            if len(parts) > 1:
+                # Task provided inline: /plan Create a new feature
+                task = " ".join(parts[1:])
+            else:
+                # Prompt for task
+                console.print(
+                    "[bold yellow]Planning Mode[/bold yellow]\n"
+                    "[dim]Enter your task/request for planning:[/dim]"
+                )
+                task = Prompt.ask("[bold cyan]Task[/bold cyan]")
+
+            if not task.strip():
+                console.print("[yellow]No task provided[/yellow]")
+                return
+
+            console.print(f"[dim]→ Creating plan for: {task}[/dim]\n")
+
+            # Add user message
+            self.messages.append({"role": "user", "content": task})
+
+            # Execute planning phase
+            plan = self.planning_phase.execute_planning(task, self.messages)
+
+            # Get user approval
+            approval = self.planning_phase.get_user_approval(plan)
+
+            if not approval.get("approved", False):
+                console.print("[yellow]Plan cancelled[/yellow]")
+                # Remove the user message since we're not proceeding
+                self.messages.pop()
+                return
+
+            # Add clear execution instruction after plan approval
+            if "modifications" in approval:
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your plan has been APPROVED with these modifications: "
+                            f"{approval['modifications']}\n\n"
+                            "Execute it NOW. Do NOT restate the plan. Do NOT apologize. "
+                            "START IMMEDIATELY with tool calls to implement the plan."
+                        ),
+                    }
+                )
+            else:
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your plan has been APPROVED. Execute it NOW. "
+                            "Do NOT restate the plan. Do NOT apologize. "
+                            "START IMMEDIATELY with tool calls to implement the plan."
+                        ),
+                    }
+                )
+
+            # Now execute with full agent loop
+            console.print("\n[bold green]→ Executing plan...[/bold green]\n")
+
+            # Update agent loop settings for execution
+            old_max = self.agent_loop.max_iterations
+            self.agent_loop.max_iterations = 15
+
+            result = self.agent_loop.run(
+                messages=self.messages,
+                tool_parser=self.parse_tool_calls,
+                display_callback=None,
+                user_request=task,
+            )
+
+            # Restore settings
+            self.agent_loop.max_iterations = old_max
+
+            if result.get("success"):
+                console.print(
+                    f"\n[green]✓ Plan execution complete in {result['iterations']} iteration(s) "
+                    f"with {result['tool_calls']} tool call(s)[/green]"
+                )
+            else:
+                console.print(f"\n[red]Error: {result.get('error')}[/red]")
+
+            # Save after execution
+            self._save_conversation()
 
         elif cmd == "/list":
             limit = int(parts[1]) if len(parts) > 1 else 20
@@ -1236,6 +1730,13 @@ shows numbered list)
                         Example: [dim]/load 1[/dim] or [dim]/load 20240118_143022[/dim]
   [green]/delete ID[/green]         - Delete a saved conversation by ID
 
+[bold yellow]Planning Mode:[/bold yellow]
+  [green]/plan[/green]              - Force planning mode for any task
+  [green]/plan <task>[/green]       - Create a plan for the specified task inline
+                        Example: [dim]/plan Refactor the authentication system[/dim]
+                        The agent will explore the codebase, create a plan, and
+                        execute it after your approval
+
 [bold yellow]Configuration:[/bold yellow]
   [green]/config[/green]            - Show current configuration
   [green]/config KEY VALUE[/green]  - Update a configuration setting
@@ -1246,7 +1747,8 @@ shows numbered list)
                         Displays: tokens used, window size, usage %, thresholds
 
 [bold yellow]Debugging:[/bold yellow]
-  [green]/debug[/green]             - Show debug information (conversation ID, message count, etc.)
+  [green]/debug[/green]             - Show debug information \
+(conversation ID, message count, etc.)
   [green]/debug prompt[/green]      - Display the full system prompt being used
 
 [bold yellow]General:[/bold yellow]
@@ -1290,7 +1792,8 @@ then [cyan]/load 1[/cyan] to load by number
             console.print(f"[yellow]Unknown command: {cmd}[/yellow]")
             console.print(
                 "[dim]Available commands: "
-                "/save, /list, /load, /config, /delete, /context, /debug, /help, exit, quit[/dim]"
+                "/save, /plan, /list, /load, /config, /delete, "
+                "/context, /debug, /help, exit, quit[/dim]"
             )
 
 
@@ -1304,6 +1807,7 @@ def main():
         epilog="""
 In-Session Commands:
   /save              Save the current conversation
+  /plan [task]       Force planning mode (explore → plan → approve → execute)
   /list [N]          List saved conversations (default: 20)
   /load <#|ID>       Load a conversation by number or ID
   /config            Show current configuration
