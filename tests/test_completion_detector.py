@@ -146,19 +146,19 @@ class TestCompletionDetector:
         assert is_complete is True
         assert reason == "conclusive_response"
 
-    # def test_conclusive_response_here_is_summary(self):
-    #     """Test detection of conclusive response with 'here is summary'."""
-    #     response = "Here is the summary of changes made to the codebase."
+    def test_conclusive_response_here_is_summary(self):
+        """Test detection of conclusive response with 'here is summary'."""
+        response = "Here is the summary of changes made to the codebase."
 
-    #     is_complete, reason = CompletionDetector.is_complete(
-    #         response_text=response,
-    #         has_tool_calls=False,
-    #         iteration=3,
-    #         max_iterations=10,
-    #     )
+        is_complete, reason = CompletionDetector.is_complete(
+            response_text=response,
+            has_tool_calls=False,
+            iteration=3,
+            max_iterations=10,
+        )
 
-    #     assert is_complete is True
-    #     assert reason == "conclusive_response"
+        assert is_complete is True
+        assert reason == "conclusive_response"
 
     def test_conclusive_response_let_me_know(self):
         """Test detection of conclusive response with 'let me know'."""

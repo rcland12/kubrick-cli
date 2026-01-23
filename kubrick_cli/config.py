@@ -93,10 +93,10 @@ class KubrickConfig:
             "use_openai": False,
             "default_working_dir": None,
             # Agent loop settings
-            "max_iterations": 15,
-            "max_tools_per_turn": 5,
+            "max_iterations": 25,  # Increased for sequential execution
+            "max_tools_per_turn": 2,  # Reduced to encourage observe-act loops
             "total_timeout_seconds": 600,
-            "enable_parallel_tools": True,
+            "enable_parallel_tools": False,  # Disabled by default for reliability
             "max_parallel_workers": 3,
             # Task evaluator settings (intelligent completion detection)
             "enable_task_evaluator": False,  # DISABLED - causes interference with tool calling
@@ -150,6 +150,9 @@ class KubrickConfig:
             "model_max_context_override": None,  # e.g., 16000 for 16k context
             # Maximum output tokens to reserve for generation
             "max_output_tokens": 2048,  # Reserve tokens for LLM output
+            # Directory-based permissions (persistent across sessions)
+            # Structure: { "/absolute/path": { "write_file": "allow|deny", ... } }
+            "directory_permissions": {},
         }
 
     def _save_config(self, config: Dict[str, Any]):
@@ -169,6 +172,38 @@ class KubrickConfig:
     def get_all(self) -> Dict[str, Any]:
         """Get all configuration values."""
         return self.config.copy()
+
+    def get_directory_permission(self, directory: str, operation: str) -> Optional[str]:
+        """
+        Get permission for an operation in a specific directory.
+
+        Args:
+            directory: Absolute path to directory
+            operation: Operation type (write_file, edit_file, run_bash, etc.)
+
+        Returns:
+            'allow', 'deny', or None if not set
+        """
+        dir_perms = self.config.get("directory_permissions", {})
+        return dir_perms.get(directory, {}).get(operation)
+
+    def set_directory_permission(self, directory: str, operation: str, permission: str):
+        """
+        Set permission for an operation in a specific directory.
+
+        Args:
+            directory: Absolute path to directory
+            operation: Operation type (write_file, edit_file, run_bash, etc.)
+            permission: 'allow' or 'deny'
+        """
+        if "directory_permissions" not in self.config:
+            self.config["directory_permissions"] = {}
+
+        if directory not in self.config["directory_permissions"]:
+            self.config["directory_permissions"][directory] = {}
+
+        self.config["directory_permissions"][directory][operation] = permission
+        self._save_config(self.config)
 
     def save_conversation(
         self, conversation_id: str, messages: list, metadata: Dict = None

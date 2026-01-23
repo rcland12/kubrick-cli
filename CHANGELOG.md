@@ -1,5 +1,277 @@
 # Kubrick CLI Changelog
 
+## Version 0.1.7
+
+### Major Architectural Improvements
+
+#### 1. Sequential Observe-Act Loop Architecture
+
+**Complete redesign of agent execution model for reliability over speed.**
+
+- **Sequential Execution**: Changed from parallel batching to iterative observe-act loop
+- **One Step at a Time**: Agent now observes results before deciding next action
+- **Immediate Feedback**: Mistakes caught immediately, not 5 iterations later
+- **Self-Correcting**: Agent can adapt based on what it learns at each step
+
+**Configuration Changes**:
+
+```json
+{
+  "max_iterations": 25, // Increased from 15 (more steps needed for sequential)
+  "max_tools_per_turn": 2, // Reduced from 5 (forces observe-act loop)
+  "enable_parallel_tools": false // Sequential by default (was true)
+}
+```
+
+**Benefits**:
+
+- Much more reliable task completion
+- Agent sees results before proceeding
+- Fewer failed attempts and retries
+- Better debugging and error recovery
+- More predictable behavior
+
+**Trade-offs**:
+
+- Slower execution (6-8 iterations vs 2-3)
+- More API calls per task
+- Higher token usage (but fewer wasted tokens on failures)
+
+#### 2. Permission System with Directory Caching
+
+**Arrow-key selection for file writes and bash commands with persistent permissions.**
+
+- **Interactive Permissions**: Uses questionary for clean arrow-key selection
+- **Directory-Based Caching**: Permissions persist for entire directories
+- **Session Caching**: "For this conversation" option stores in memory
+- **Flexible Control**:
+  - "Yes, just this once" - One-time approval
+  - "Yes, for this conversation" - Session-wide approval
+  - "Yes, always in this directory" - Permanent directory permission
+  - "No, not this time" - Reject this action
+  - "No, never in this directory" - Permanent directory block
+
+**Storage**: `~/.kubrick/config.json` now includes `directory_permissions` field
+
+**Example**:
+
+```
+Kubrick wants to write to: /home/user/project/src/main.py
+
+How would you like to respond?
+❯ Yes, just this once
+  Yes, for this conversation
+  Yes, always in this directory
+  No, not this time
+  No, never in this directory
+```
+
+### Enhanced System Prompts
+
+#### 3. Critical: Never Show Code Instead of Writing It
+
+**Fixed #1 most common bug: Agent displaying code in markdown instead of calling write_file.**
+
+- **New Prominent Warning**: Added explicit section showing wrong vs correct approach
+- **Anti-Pattern Example**: Shows exact mistake (displaying Dockerfile in markdown block)
+- **New Rule #10**: "NEVER SHOW CODE IN MARKDOWN INSTEAD OF WRITING"
+- **Clear Message**: "Showing code ≠ Writing code. Use write_file tool, not markdown blocks!"
+
+**Impact**: Prevents agent from showing code to user and then returning empty responses.
+
+#### 4. Docker & DevOps Best Practices
+
+**Comprehensive Docker guidance to prevent common mistakes.**
+
+- Check for pyproject.toml vs requirements.txt before creating Dockerfiles
+- Multi-stage builds for production images
+- Security best practices (non-root users, minimal base images)
+- Health checks and proper signal handling
+- Cache optimization strategies
+
+**Critical Addition**: Warning about glob pattern limitations
+
+- Python glob doesn't support bash brace expansion `{file1,file2,file3}`
+- Documented in system prompt, planning prompt, and ARCHITECTURE.md
+
+#### 5. Sequential Execution Guidance
+
+**Explicit examples teaching observe-act loop pattern.**
+
+- Example 4 shows wrong (batching) vs correct (sequential) approach
+- Clear iteration-by-iteration walkthrough
+- Emphasis on observing results before next action
+- Tool result trust guidance
+
+### Bug Fixes
+
+#### Critical Fixes
+
+1. **Tool Calls Not Executing Before TASK_COMPLETE** (Critical)
+   - **Issue**: Agent included TASK_COMPLETE in same response as write_file, completion check happened before tool execution
+   - **Fix**: Only exit if `is_complete and not tool_calls`
+   - **Impact**: Tools now execute properly before completion
+
+2. **Planning Mode Apology Loop** (Critical)
+   - **Issue**: Agent returned empty responses saying "I'm sorry, but I can't proceed without results"
+   - **Root Cause**: Planning mode was copying entire base_messages with conflicting system prompts
+   - **Fix**: Created clean planning-only messages without main system prompt
+   - **Impact**: Planning mode now explores reliably
+
+3. **Empty Response Infinite Loop** (Critical)
+   - **Issue**: Agent returned 10+ consecutive empty responses
+   - **Fix**: Updated completion detector to catch empty responses (len == 0)
+   - **Impact**: Prevents infinite loops
+
+4. **Agent Hallucinating Tool Results** (Critical)
+   - **Issue**: Agent returned fake JSON like `{"files": ["requirements.txt"]}` without tool calls
+   - **Fix**: Added hallucination detector that stops if agent returns JSON without valid tool calls
+   - **Added**: "CRITICAL: Never Hallucinate Tool Results" system prompt section
+   - **Impact**: Prevents agent from making up results
+
+5. **Premature Completion** (High Priority)
+   - **Issue**: Agent said "Successfully created. Now, let's verify..." but completion detector saw "successfully" and stopped
+   - **Fix**: Added continuation_patterns that check BEFORE conclusive_patterns
+   - **Patterns**: `now let's`, `next I'll`, `need to verify`, etc.
+   - **Impact**: Agent completes full task instead of stopping mid-work
+
+6. **Glob Pattern Brace Expansion** (High Priority)
+   - **Issue**: `list_files(pattern="{requirements.txt,pyproject.toml}")` returned 0 results
+   - **Root Cause**: Python pathlib.glob() doesn't support bash brace expansion
+   - **Fix**: Added explicit warnings in system prompt, planning prompt, and ARCHITECTURE.md
+   - **Workaround**: Check files individually or use wildcards
+   - **Impact**: Agent can now find dependency files
+
+7. **Self-Doubt Loop** (Medium Priority)
+   - **Issue**: Agent said "It seems like the file was not created successfully" even after ✓ succeeded message
+   - **Fix**: Added "TRUST TOOL SUCCESS MESSAGES" rule to Professional Behavior section
+   - **Impact**: Agent trusts tool results instead of second-guessing
+
+8. **F-String Formatting Bug** (Medium Priority)
+   - **Issue**: Failed to start with "Invalid format specifier ' ["..."]' for object of type 'str'"
+   - **Root Cause**: Added `{"files": ["..."]}` in system prompt without escaping curly braces
+   - **Fix**: Changed to `{{"files": ["..."]}}` (double braces for escaping)
+   - **Impact**: Application starts without errors
+
+#### Test Fixes
+
+9. **test_conclusive_response_here_is_summary**
+   - **Issue**: Test expected "here is the summary" to be detected as conclusive
+   - **Root Cause**: Pattern only matched "here is" for creative content (poem, story, joke)
+   - **Fix**: Added "summary" to the list: `r"\bhere(?:'s| is) (?:the |a )?(?:poem|story|joke|summary)"`
+   - **Impact**: Test passes, agent correctly detects summary responses as conclusive
+
+### Files Added
+
+- `ARCHITECTURE.md` - Comprehensive documentation of sequential observe-act loop architecture
+- Updated system prompts throughout codebase
+
+### Files Modified
+
+- `kubrick_cli/main.py`:
+  - Lines 70-74: SafetyManager now receives kubrick_config and working_dir for persistent permissions
+  - Lines 360-489: Added Docker & DevOps Best Practices section
+  - Lines 491-547: Added Self-Verification section
+  - Lines 553-590: Added Docker-Specific Best Practices with glob pattern warning
+  - Lines 577-578: Critical warning about glob pattern limitations
+  - Lines 592-614: Enhanced Professional Behavior section with tool trust guidance
+  - Lines 616-647: Added "Agentic Behavior - SEQUENTIAL EXECUTION" section
+  - Lines 651-666: Added "CRITICAL: Never Hallucinate Tool Results" section
+  - Lines 673-676: Strengthened tool call format requirement
+  - Lines 766-767: New Rule #10: NEVER SHOW CODE IN MARKDOWN INSTEAD OF WRITING
+  - Lines 787-822: Added prominent "CRITICAL: Never Show Code Instead of Writing It" section
+  - Lines 822-876: Example 4 showing sequential observe-act loop
+
+- `kubrick_cli/config.py`:
+  - Lines 96-100: Updated default config values (max_iterations: 25, max_tools_per_turn: 2, enable_parallel_tools: false)
+  - Lines 153-155: Added directory_permissions field
+  - Lines 176-208: Added get_directory_permission and set_directory_permission methods
+
+- `kubrick_cli/safety.py`:
+  - Lines 3, 9-12: Added questionary and Path imports
+  - Lines 82-99: Updated **init** to accept kubrick_config and working_dir
+  - Lines 219-345: Rewrote check_file_write_permission with arrow-key selection and directory caching
+  - Lines 347-471: Updated check_bash_permission with same approach
+
+- `kubrick_cli/planning.py`:
+  - Lines 78-80: Fixed critical bug - removed base_messages.copy() to avoid conflicting prompts
+  - Lines 82-99: Created clean planning-specific system prompt
+  - Lines 95-99: Added critical rules: "ACT IMMEDIATELY", "DON'T APOLOGIZE"
+  - Lines 130-131: Added warning about glob pattern limitations
+  - Lines 139-142: Added note for Docker tasks to check dependency files
+
+- `kubrick_cli/agent_loop.py`:
+  - Lines 308-313: Fixed completion check to only exit if `is_complete and not tool_calls`
+  - Lines 344: Same fix for evaluator completion
+  - Lines 419-450: Fixed completion detector stuck loop threshold (4→8 iterations), added empty response detection
+  - Lines 96-112: Added continuation pattern detection to prevent premature completion
+  - Lines 438-452: Added hallucination detector
+  - Lines 453-462: Added message when limiting tool calls
+  - Line 119: Fixed conclusive pattern to include "summary"
+
+- `pyproject.toml`:
+  - Line 7: Version bumped to 0.1.7
+  - Line 19: Added questionary>=2.0.0 dependency
+
+### Known Issues
+
+**Glob Pattern Limitations**:
+
+- Python's pathlib.glob() doesn't support bash brace expansion `{file1,file2,file3}`
+- Workaround: Check files individually or use wildcards like `*requirements*.txt`
+- Fully documented in ARCHITECTURE.md and system prompts
+
+### Migration Notes
+
+**For Existing Users**:
+
+- Sequential execution is now default - tasks will be slower but much more reliable
+- Permission system activates on first file write or bash command
+- All existing functionality preserved
+- Config changes apply automatically to new conversations
+
+**Configuration Impact**:
+
+- Existing config files automatically upgraded with new defaults
+- You can override defaults: `/config max_tools_per_turn 5` to re-enable batching
+- Permission cache stored in `~/.kubrick/config.json`
+
+**Behavioral Changes**:
+
+- Agent now works more slowly but completes tasks correctly
+- More iterations per task (typical: 6-10 instead of 2-4)
+- Agent observes results before proceeding (observe-act loop)
+- Parallel execution disabled by default (can re-enable per task)
+
+### Recommendations
+
+1. **Keep sequential execution enabled** - Much more reliable, worth the slowdown
+2. **Trust the permission system** - Directory-based caching prevents repeated prompts
+3. **For debugging**: Use `/debug prompt` to see full system prompt
+4. **Review ARCHITECTURE.md** - Understand the reasoning behind architectural changes
+5. **Update regularly**: `pip install --upgrade kubrick-cli`
+
+### Testing
+
+All changes tested with:
+
+- Simple file operations (create, edit, read)
+- Complex multi-step tasks (Docker/pytest scenario)
+- Permission system (various approval combinations)
+- Planning mode (exploration and plan generation)
+- Error conditions (hallucination detection, empty responses)
+
+**Test Results**:
+
+- ✅ Sequential execution working reliably
+- ✅ Permission system caching correctly
+- ✅ Planning mode explores without apology loops
+- ✅ Completion detection prevents premature exits
+- ✅ Hallucination detector stops fake results
+- ✅ All pytest tests passing (102 tests)
+
+---
+
 ## Version 0.1.6
 
 ### Enhancements
@@ -16,19 +288,22 @@
   - All functionality preserved
 
 **Configuration**:
+
 ```json
 {
-  "clean_display": true  // Default: enabled
+  "clean_display": true // Default: enabled
 }
 ```
 
 **What You See**:
+
 - Agent natural language responses
 - Tool execution status (`→ Called write_file`, `✓ write_file succeeded`)
 - Iteration progress (`→ Agent iteration 1/15`)
 - Context management messages
 
 **What's Hidden**:
+
 - Only the raw JSON `\`\`\`tool_call {...}` blocks
 
 See [docs/CLEAN_DISPLAY_MODE.md](docs/CLEAN_DISPLAY_MODE.md) for details.
@@ -42,11 +317,13 @@ See [docs/CLEAN_DISPLAY_MODE.md](docs/CLEAN_DISPLAY_MODE.md) for details.
 - **No Emojis**: Clean, professional display without emoji clutter
 
 **Status Lifecycle**:
+
 - During agent work: `⠋ Agent running...` in status bar
 - During tool execution: Spinner with action description (`⠙ Writing /path/to/file.py`)
 - After completion: Status bar returns to normal (`Type /help for options`)
 
 **Benefits**:
+
 - Continuous feedback that system is working
 - Professional, polished interface
 - Clear understanding of agent activity
@@ -66,6 +343,7 @@ See [docs/RUNNING_STATUS_INDICATOR.md](docs/RUNNING_STATUS_INDICATOR.md) for det
 - **Spinner Animation**: Braille pattern spinner for minimal visual footprint
 
 **Display Example**:
+
 ```
 Type /help for options    Runtime: 45s  Files: +3  Lines: +127  Tools: 8  Tokens: 15234
 ```
@@ -84,17 +362,20 @@ Type /help for options    Runtime: 45s  Files: +3  Lines: +127  Tools: 8  Tokens
 #### 5. Critical Bug Fixes
 
 **StreamBuffer Display Bug** (Critical):
+
 - **Issue**: Agent stopped generating tool calls, kept apologizing
 - **Root Cause**: StreamBuffer was suppressing ALL text when no tool call was present
 - **Fix**: Properly handle non-tool-call content - display everything normally when no JSON blocks detected
 - **Impact**: Agent now works reliably for all tasks
 
 **Task Evaluator Issues**:
+
 - **Issue**: Evaluator causing agent to stop working or apologize repeatedly
 - **Fix**: Disabled by default (`enable_task_evaluator: false`)
 - **Status**: Marked as experimental feature
 
 **Indentation Error**:
+
 - **Issue**: `UnboundLocalError` in evaluator code
 - **Fix**: Properly indented evaluator logic inside conditional block
 
@@ -113,12 +394,14 @@ See [docs/v0.1.6_FIXES.md](docs/v0.1.6_FIXES.md) for detailed analysis.
 - **Security Badge**: Added to README for transparency
 
 **New Documentation**:
+
 - `docs/SECURITY.md` - Security policy, reporting vulnerabilities, best practices
 - Security scanning results visible in GitHub Actions
 
 #### 7. Documentation Improvements
 
 **README.md Simplification**:
+
 - Reduced from 240 lines to 99 lines
 - Removed extensive Docker permission explanations (moved to DOCKER.md)
 - Removed provider flag examples (setup wizard handles this)
@@ -127,6 +410,7 @@ See [docs/v0.1.6_FIXES.md](docs/v0.1.6_FIXES.md) for detailed analysis.
 - More professional and approachable for new users
 
 **WIKI.md Enhancements**:
+
 - Added "Display Options" section documenting `clean_display`
 - Added "Task Evaluator" section with experimental warning
 - Documented all new configuration options
@@ -134,6 +418,7 @@ See [docs/v0.1.6_FIXES.md](docs/v0.1.6_FIXES.md) for detailed analysis.
 - Added usage examples for new features
 
 **New Documentation Files**:
+
 - `docs/CLEAN_DISPLAY_MODE.md` - Complete guide to clean display
 - `docs/RUNNING_STATUS_INDICATOR.md` - Running status implementation details
 - `docs/v0.1.6_FIXES.md` - Critical bug fix documentation
@@ -142,15 +427,17 @@ See [docs/v0.1.6_FIXES.md](docs/v0.1.6_FIXES.md) for detailed analysis.
 #### 8. Configuration Updates
 
 **New Options**:
+
 ```json
 {
-  "clean_display": true,              // Hide JSON tool calls (default: enabled)
-  "enable_task_evaluator": false,     // Experimental evaluator (default: disabled)
-  "evaluator_model": "gpt-4o-mini"    // Model for task evaluation
+  "clean_display": true, // Hide JSON tool calls (default: enabled)
+  "enable_task_evaluator": false, // Experimental evaluator (default: disabled)
+  "evaluator_model": "gpt-4o-mini" // Model for task evaluation
 }
 ```
 
 **Updated Defaults**:
+
 - `clean_display`: `true` - Cleaner output by default
 - `enable_task_evaluator`: `false` - Disabled to prevent interference
 
@@ -196,11 +483,13 @@ See [docs/v0.1.6_FIXES.md](docs/v0.1.6_FIXES.md) for detailed analysis.
 ### Migration Notes
 
 **For Existing Users**:
+
 - Clean display is enabled by default - disable with `/config clean_display false` if needed
 - Task evaluator is disabled by default - enable with `/config enable_task_evaluator true` (experimental)
 - All existing functionality preserved - new features enhance UX without breaking changes
 
 **Configuration**:
+
 - No config changes required - new defaults work well
 - Optional: Explore clean display mode for better UX
 - Optional: Try task evaluator (experimental, may cause issues)
@@ -208,12 +497,14 @@ See [docs/v0.1.6_FIXES.md](docs/v0.1.6_FIXES.md) for detailed analysis.
 ### Testing
 
 All changes tested with:
+
 - Simple tasks (file creation, editing)
 - Complex tasks (multi-step planning and execution)
 - Long-running operations (verify status indicator)
 - Error conditions (verify clean error display)
 
 **Test Results**:
+
 - ✅ Agent generates tool calls properly
 - ✅ Clean display suppresses only JSON
 - ✅ Running status indicator works reliably
@@ -223,6 +514,7 @@ All changes tested with:
 ### Known Issues
 
 **Minor: First Iteration Apology**
+
 - Occasionally the agent says "I apologize for the confusion" on iteration 1-2
 - Does not prevent task completion
 - Cosmetic issue only

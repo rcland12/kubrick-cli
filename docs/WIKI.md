@@ -11,6 +11,7 @@ Complete guide to using Kubrick CLI for AI-assisted coding.
 - [Configuration](#configuration)
 - [Context Management](#context-management)
 - [Available Tools](#available-tools)
+- [Planning Mode](#planning-mode)
 - [Special Commands](#special-commands)
 - [Conversation Management](#conversation-management)
 - [Troubleshooting](#troubleshooting)
@@ -22,6 +23,8 @@ Complete guide to using Kubrick CLI for AI-assisted coding.
 - 🤖 **AI-powered coding assistant** with natural conversation
 - 🔌 **Multi-provider support** - Use Triton, OpenAI, or Anthropic
 - 🛠️ **Robust tool calling** for automatic file operations and commands
+- 📋 **Planning Mode** - Intelligent task classification with optional plan-before-execute workflow
+- 🔒 **Permission system** - Granular control over file writes and bash commands with session caching
 - 📁 **File operations**: read, write, edit with pattern matching
 - 🔍 **Code search** with glob patterns and grep-like functionality
 - 💻 **Bash command integration** for running scripts and commands
@@ -254,9 +257,9 @@ Here are all available configuration options:
   "show_progress": true,                   // Show progress indicators
   "clean_display": true,                   // Suppress raw JSON tool calls (recommended)
 
-  // Task Classification Settings
-  "enable_task_classification": true,      // Enable automatic task classification
-  "enable_planning_phase": true,           // Enable planning phase for complex tasks
+  // Task Classification & Planning Settings
+  "enable_task_classification": true,      // Enable automatic task classification (SIMPLE/COMPLEX/CONVERSATIONAL)
+  "enable_planning_phase": true,           // Offer planning mode for COMPLEX tasks (default: no)
 
   // Task Evaluator Settings (Advanced)
   "enable_task_evaluator": false,          // EXPERIMENTAL: LLM-based completion detection (can interfere)
@@ -351,6 +354,19 @@ Disable with `/config clean_display false` if you want to see the raw JSON for d
 | `require_dangerous_command_confirmation` | `true` | Confirm dangerous bash commands (rm, sudo, etc.) |
 | `tool_timeout_seconds` | `30` | Individual tool timeout |
 | `max_file_size_mb` | `10` | Maximum file size to read |
+
+**Permission System:** Kubrick includes a built-in permission system that prompts for approval before:
+- Writing or editing files (`write_file`, `edit_file`)
+- Creating directories (`create_directory`)
+- Running bash commands (`run_bash`)
+
+When prompted, you can choose:
+- **Once**: Allow this single operation
+- **Session**: Remember permission for this file/command for the entire session
+- **All-bash**: Allow all bash commands for the session (file prompts still required)
+- **Deny**: Block the operation
+
+Permissions are cached in-memory per session, so you won't be repeatedly prompted for the same files or commands.
 
 #### Task Evaluator (⚠️ Experimental)
 
@@ -621,6 +637,225 @@ The AI assistant can automatically use these tools:
   { "tool": "run_bash", "parameters": { "command": "pytest tests/" } }
   ```
 
+## Planning Mode
+
+Planning Mode is a feature that helps Kubrick tackle complex tasks by creating a detailed implementation plan before executing changes. This approach reduces errors, prevents wasted effort, and gives you control over what changes will be made.
+
+### How Planning Mode Works
+
+When Planning Mode is activated, Kubrick follows a structured workflow:
+
+1. **Exploration Phase** (Read-only)
+   - Agent explores your codebase using read-only tools
+   - Reads relevant files, lists directory structures, searches for patterns
+   - Understands existing architecture and dependencies
+   - No changes are made during this phase
+
+2. **Plan Creation**
+   - Agent creates a detailed implementation plan including:
+     - Overview of the approach
+     - Step-by-step implementation tasks
+     - Files that will be modified
+     - Potential risks or concerns
+
+3. **User Approval**
+   - Plan is presented to you for review
+   - You can:
+     - **Approve**: Execute the plan as written
+     - **Modify**: Provide feedback for the agent to adjust the plan
+     - **Reject**: Cancel the task entirely
+
+4. **Execution Phase** (Full tools)
+   - After approval, agent executes with full write permissions
+   - Follows the approved plan
+   - Makes changes to files, runs commands, etc.
+
+### When Planning Mode is Triggered
+
+Kubrick uses intelligent task classification to determine when to offer Planning Mode:
+
+#### Automatic Classification
+
+**SIMPLE Tasks** (No planning prompt):
+- Creating/modifying 1-3 files with clear requirements
+- Single function additions or small edits
+- Well-defined scope with 1-7 tool calls
+- Examples:
+  - "Create two Python scripts for healthcheck monitoring"
+  - "Add a new function to module.py"
+  - "Write a script and test file for it"
+  - "Update the README and add an example file"
+
+**COMPLEX Tasks** (Offers planning):
+- Touching 4+ files with interdependencies
+- Architectural changes or major refactoring
+- Uncertain scope requiring exploration
+- Multiple valid approaches needing user input
+- Examples:
+  - "Refactor the authentication system"
+  - "Add logging to all Python files in the project"
+  - "Debug why the tests are failing" (requires investigation)
+  - "Redesign the database schema and update all related code"
+
+When a COMPLEX task is detected, you'll see:
+```
+→ Task classified as COMPLEX
+→ Execution mode: agentic_complex (model: best, max_iter: 15)
+
+This looks complex. Create a plan first? [yes/no] (no):
+```
+
+**Note:** The default is "no" - Kubrick will execute immediately unless you choose to plan. This keeps you in control.
+
+### Manual Planning with `/plan`
+
+You can force Planning Mode for any task using the `/plan` command:
+
+#### Interactive Mode
+```bash
+You> /plan
+Planning Mode
+Enter your task/request for planning:
+Task> Refactor authentication system to use JWT tokens
+
+→ Entering PLANNING MODE
+[Agent explores codebase...]
+```
+
+#### Inline Mode
+```bash
+You> /plan Refactor authentication system to use JWT tokens
+
+→ Entering PLANNING MODE
+[Agent explores codebase...]
+```
+
+### Why Use Planning Mode?
+
+**Benefits:**
+- ✅ **Reduces mistakes**: Agent explores before making changes
+- ✅ **User control**: Review and approve before any files are modified
+- ✅ **Better approach**: Agent thinks through the full solution first
+- ✅ **Catches issues**: Identifies potential problems before execution
+- ✅ **Documentation**: Creates a clear record of what will be done
+
+**Best for:**
+- Architectural changes across multiple files
+- Refactoring with unclear scope
+- Tasks where multiple approaches are valid
+- When you want to review before execution
+- Learning how to implement something (see the plan!)
+
+**Skip it for:**
+- Quick file edits or additions (1-3 files)
+- Well-defined, straightforward tasks
+- When you trust the agent to proceed directly
+
+### Configuring Planning Behavior
+
+You can enable or disable the planning feature entirely:
+
+```bash
+# Disable planning prompts (always skip to execution)
+You> /config enable_planning_phase false
+
+# Re-enable planning prompts
+You> /config enable_planning_phase true
+
+# Disable task classification (treats all tasks as simple)
+You> /config enable_task_classification false
+```
+
+### Example Planning Session
+
+```bash
+You> /plan Add a REST API endpoint for user profile updates
+
+→ Creating plan for: Add a REST API endpoint for user profile updates
+
+→ Entering PLANNING MODE
+Agent will explore the codebase with read-only tools and create a plan.
+
+→ Agent iteration 1/10
+Assistant:
+Let me explore the codebase to understand the existing API structure.
+
+```tool_call
+{"tool": "list_files", "parameters": {"pattern": "**/*.py"}}
+```
+
+[... exploration continues ...]
+
+→ Agent iteration 2/10
+Assistant:
+## Implementation Plan
+
+### Overview
+We'll add a new REST API endpoint at PUT /api/users/{user_id}/profile
+that allows authenticated users to update their profile information.
+
+### Steps
+1. Create profile update schema in schemas/user.py
+2. Add PUT endpoint handler in routes/users.py
+3. Implement validation for profile fields
+4. Add authentication middleware check
+5. Create integration tests in tests/test_user_routes.py
+6. Update API documentation
+
+### Files to Modify
+- routes/users.py: Add new PUT endpoint
+- schemas/user.py: Add ProfileUpdateSchema
+- tests/test_user_routes.py: Add test coverage
+- docs/api.md: Document new endpoint
+
+### Risks
+- Need to ensure proper authentication is enforced
+- Profile updates should only allow whitelisted fields
+- Rate limiting may be needed to prevent abuse
+
+PLAN_COMPLETE
+
+======================================================================
+╭────────────────────── Implementation Plan ──────────────────────╮
+│ [Plan details displayed in formatted panel]                      │
+╰───────────────────────────────────────────────────────────────────╯
+======================================================================
+
+Approve this plan? [approve/modify/reject] (approve): approve
+✓ Plan approved, proceeding with implementation
+
+→ Executing plan...
+
+[Agent implements the changes...]
+
+✓ Plan execution complete in 8 iteration(s) with 12 tool call(s)
+```
+
+### Planning Mode Tools
+
+During the Planning Phase, only **read-only tools** are available:
+
+| Tool | Purpose |
+|------|---------|
+| `read_file` | Read file contents |
+| `list_files` | List files matching glob patterns |
+| `search_files` | Search for text patterns in files |
+| `run_bash` | **Read-only commands only** (ls, grep, find, tree, etc.) |
+
+**Restricted:** write_file, edit_file, create_directory, and destructive bash commands are blocked during planning.
+
+### Tips for Effective Planning
+
+1. **Use `/plan` for exploration**: Even if you're not sure what to do, let the agent explore and create a plan to understand the codebase better
+
+2. **Provide modifications**: If the plan isn't quite right, choose "modify" and explain what needs adjustment
+
+3. **Planning is educational**: Review the plans to learn about architectural patterns in your codebase
+
+4. **Skip planning for simple tasks**: If you know exactly what needs to be done and it's 1-3 files, just ask directly
+
+5. **Trust the classification**: Kubrick's classifier is conservative - if it suggests planning, consider accepting
+
 ## Special Commands
 
 Use these commands during a Kubrick session:
@@ -628,6 +863,8 @@ Use these commands during a Kubrick session:
 | Command             | Description                                                             |
 | ------------------- | ----------------------------------------------------------------------- |
 | `/save`             | Manually save the current conversation                                  |
+| `/plan`             | **Force planning mode** - Explore → Plan → Approve → Execute           |
+| `/plan <task>`      | Force planning mode with inline task description                        |
 | `/list [N]`         | List saved conversations (default: 20, shows numbered list)             |
 | `/load <#\|ID>`     | Load a conversation by number (from /list) or ID                        |
 | `/config`           | Show current configuration                                              |
@@ -661,6 +898,13 @@ You can load conversations in two ways:
 ### Examples
 
 ```bash
+# Force planning mode for a complex task
+You: /plan Refactor authentication to use JWT
+
+# Interactive planning mode
+You: /plan
+Task> Add REST API endpoint for user profile updates
+
 # List conversations
 You: /list
 
@@ -934,11 +1178,14 @@ black kubrick_cli/
 ## How It Works
 
 1. You type questions or requests in natural language
-2. The AI analyzes your request and chooses appropriate tools
-3. Tools are executed automatically (reads, writes, searches, commands)
-4. Results are displayed and the AI continues the conversation
-5. All operations happen in your working directory
-6. Conversations are automatically saved to `~/.kubrick/conversations/`
+2. Kubrick classifies your task (SIMPLE, COMPLEX, or CONVERSATIONAL)
+3. For COMPLEX tasks, optionally enter Planning Mode for exploration and approval
+4. The AI analyzes your request and chooses appropriate tools
+5. Permission checks occur for file writes and bash commands (cached per session)
+6. Tools are executed automatically (reads, writes, searches, commands)
+7. Results are displayed and the AI continues the conversation
+8. All operations happen in your working directory
+9. Conversations are automatically saved to `~/.kubrick/conversations/`
 
 ## Best Practices
 
@@ -946,8 +1193,11 @@ black kubrick_cli/
 
 - Be specific in your requests
 - Let the AI use tools automatically (don't micromanage)
+- Use `/plan` for complex refactoring or architectural changes
+- Trust the task classifier - it defaults to "just do it" for good reason
 - Use `/list` to find previous conversations
 - Configure Triton URL once with `/config` and forget it
+- Review permission prompts carefully to avoid accidental overwrites
 
 ### For LLM Models
 

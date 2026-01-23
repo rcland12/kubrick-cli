@@ -93,11 +93,30 @@ class CompletionDetector:
             if re.search(pattern, text_lower):
                 return False  # Not conclusive, agent is about to start
 
+        # Check for continuation indicators (agent says they'll do more work)
+        continuation_patterns = [
+            r"\bnow,? (?:let'?s|i'?ll|we'?ll)",
+            r"\bnext,? (?:let'?s|i'?ll|we'?ll)",
+            r"\bthen (?:let'?s|i'?ll|we'?ll)",
+            r"\bafter (?:that|this)",
+            r"\bfinally,? (?:let'?s|i'?ll|we'?ll)",
+            r"\bto (?:complete|finish)",
+            r"\bstill need to",
+            r"\balso need to",
+            r"\bshould also",
+            r"\bneed to (?:verify|check|test|update|modify|add)",
+        ]
+
+        for pattern in continuation_patterns:
+            if re.search(pattern, text_lower):
+                return False  # Agent is continuing work, not done
+
         # Expanded patterns to catch genuine completions
+        # But only if no continuation indicators found above
         conclusive_patterns = [
             r"\b(done|completed|finished|ready)\b",
             r"\b(successfully|all set|good to go)\b",
-            r"\bhere(?:'s| is) (?:the |a )?(?:poem|story|joke)",  # Only for creative content
+            r"\bhere(?:'s| is) (?:the |a )?(?:poem|story|joke|summary)",
             r"\b(?:task|work|changes) (?:is |are )?(?:complete|done|finished)",
             r"\blet me know if you need",
             r"\bthat(?:'s| should do it)",
@@ -303,7 +322,9 @@ class AgentLoop:
                     max_iterations=self.max_iterations,
                 )
 
-                if is_complete:
+                # Only exit if complete AND no pending tool calls to execute
+                # If there are tool calls, we must execute them first before completing
+                if is_complete and not tool_calls:
                     console.print(f"\n[green]✓ Task complete ({reason})[/green]")
                     return {
                         "success": True,
@@ -335,9 +356,11 @@ class AgentLoop:
                         )
 
                         # Handle evaluator recommendations
+                        # Only exit if complete AND no pending tool calls to execute
                         if (
                             eval_result.recommendation == "stop"
                             and eval_result.is_complete
+                            and not tool_calls
                         ):
                             console.print(
                                 "\n[green]✓ Task complete "
@@ -412,15 +435,60 @@ class AgentLoop:
                                     )
                                     continue
 
+                # Check if response looks like a hallucinated tool result (agent returns fake JSON)
+                if not tool_calls and response_text.strip().startswith("{"):
+                    # Agent might be hallucinating tool results
+                    console.print(
+                        "\n[yellow]⚠ Warning: Response looks like JSON "
+                        "but no tool calls were parsed.[/yellow]"
+                    )
+                    console.print(
+                        "[yellow]Agent may be hallucinating tool results. "
+                        "Stopping to prevent incorrect behavior.[/yellow]"
+                    )
+                    return {
+                        "success": False,
+                        "error": (
+                            "Agent hallucinating tool results "
+                            "(returning JSON without valid tool call format)"
+                        ),
+                        "iterations": iteration,
+                        "tool_calls": total_tool_calls,
+                    }
+
                 # Safety check: If agent keeps responding without tools at high iterations,
-                # it might be stuck. Only apply this after several iterations.
-                if not tool_calls and iteration >= 4:
+                # it might be stuck. Only apply this after many iterations to avoid
+                # premature stopping. Increased from 4 to 8 to allow more thinking/planning
+                # time.
+                if not tool_calls and iteration >= 8:
                     # Check if this looks like a stuck loop (agent keeps talking without acting)
-                    if len(response_text) > 50:
-                        console.print(
-                            "\n[yellow]→ Multiple iterations without tool calls. "
-                            "Possible stuck loop detected.[/yellow]"
-                        )
+                    # Also check if the response is asking questions or seems conclusive
+                    is_asking_question = any(
+                        marker in response_text.lower()
+                        for marker in [
+                            "would you like",
+                            "do you want",
+                            "should i",
+                            "which would you prefer",
+                        ]
+                    )
+
+                    # Stop if: not asking questions AND (response is long, empty, or very short)
+                    # Empty/short responses (<10 chars) indicate the model is stuck/erroring
+                    response_length = len(response_text.strip())
+                    is_stuck = response_length == 0 or response_length > 50
+
+                    if not is_asking_question and is_stuck:
+                        if response_length == 0:
+                            console.print(
+                                "\n[yellow]→ Agent returning empty responses. "
+                                "Stopping to prevent infinite loop.[/yellow]"
+                            )
+                        else:
+                            console.print(
+                                "\n[yellow]→ Multiple iterations without tool calls. "
+                                "Possible stuck loop detected.[/yellow]"
+                            )
                         return {
                             "success": True,
                             "completion_reason": "no_tools_stuck_loop",
@@ -433,6 +501,10 @@ class AgentLoop:
                         console.print(
                             f"[yellow]⚠ Too many tool calls ({len(tool_calls)}), "
                             f"limiting to {self.max_tools_per_turn}[/yellow]"
+                        )
+                        console.print(
+                            "[dim]Note: Kubrick works best with 1-2 tools per iteration "
+                            "in a sequential observe-act loop.[/dim]"
                         )
                         tool_calls = tool_calls[: self.max_tools_per_turn]
 

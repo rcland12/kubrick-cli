@@ -91,24 +91,32 @@ Your job is to classify tasks into three tiers: CONVERSATIONAL, SIMPLE, or COMPL
 
 **SIMPLE:**
 - Single file operations (read, write, edit one file)
+- Creating/modifying 2-3 files with clear requirements
 - Clear, specific scope with well-defined requirements
-- Estimated 1-5 tool calls
+- Estimated 1-7 tool calls
 - Examples:
   - "Read config.py"
   - "Create a hello world script"
   - "Fix the typo in line 42 of main.py"
   - "List all Python files"
+  - "Create two Python scripts that do X and Y"
+  - "Add a new function to module.py"
+  - "Write a script and a test file for it"
+  - "Update the README and add a new example file"
 
 **COMPLEX:**
-- Multi-file operations affecting multiple files
-- Architectural changes or refactoring
-- Uncertain scope requiring exploration
-- Estimated >5 tool calls
+- Touching 4+ files with interdependencies
+- Architectural changes or major refactoring across codebase
+- Uncertain scope requiring significant exploration
+- Multiple valid implementation approaches needing user input
+- Estimated >8 tool calls or unclear scope
 - Examples:
-  - "Add logging to all Python files"
+  - "Add logging to all Python files in the project"
   - "Refactor the authentication system"
-  - "Implement a new feature"
-  - "Debug why the tests are failing"
+  - "Implement a new feature" (vague, needs exploration)
+  - "Debug why the tests are failing" (requires investigation)
+  - "Redesign the database schema and update all related code"
+  - "Add a new API endpoint with tests, docs, and integration"
 
 # Response Format
 

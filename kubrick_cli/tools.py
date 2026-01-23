@@ -296,6 +296,16 @@ class ToolExecutor:
         file_path = self._resolve_path(params["file_path"])
         content = params["content"]
 
+        # Check permission if safety manager is enabled
+        if self.safety_manager:
+            if not self.safety_manager.check_file_write_permission(
+                str(file_path), operation="write_file"
+            ):
+                return {
+                    "success": False,
+                    "error": "Permission denied: User declined file write operation",
+                }
+
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         file_path.write_text(content)
@@ -312,6 +322,16 @@ class ToolExecutor:
 
         if not file_path.exists():
             return {"success": False, "error": f"File not found: {file_path}"}
+
+        # Check permission if safety manager is enabled
+        if self.safety_manager:
+            if not self.safety_manager.check_file_write_permission(
+                str(file_path), operation="edit_file"
+            ):
+                return {
+                    "success": False,
+                    "error": "Permission denied: User declined file edit operation",
+                }
 
         content = file_path.read_text()
 
@@ -478,6 +498,15 @@ class ToolExecutor:
                         "success": False,
                         "error": "Command cancelled by user (dangerous command)",
                     }
+            else:
+                # Check general bash permission for safe commands
+                if not self.safety_manager.check_bash_permission(
+                    command, is_dangerous=False
+                ):
+                    return {
+                        "success": False,
+                        "error": "Permission denied: User declined bash command execution",
+                    }
 
         try:
             timeout = 30
@@ -512,6 +541,17 @@ class ToolExecutor:
     def _create_directory(self, params: Dict) -> Dict:
         """Create a directory."""
         path = self._resolve_path(params["path"])
+
+        # Check permission if safety manager is enabled
+        if self.safety_manager:
+            if not self.safety_manager.check_file_write_permission(
+                str(path), operation="create_directory"
+            ):
+                return {
+                    "success": False,
+                    "error": "Permission denied: User declined directory creation",
+                }
+
         path.mkdir(parents=True, exist_ok=True)
         return {
             "success": True,

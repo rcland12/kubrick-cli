@@ -2,7 +2,7 @@ name: Security Scanning
 
 on:
   push:
-    branches: ["master", "staging", "**"]
+    branches: ["master", "staging"]
   pull_request:
     branches: ["master", "staging"]
   schedule:
@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
   actions: read
 
 jobs:
@@ -21,12 +20,10 @@ jobs:
       actions: read
       contents: read
       security-events: write
-
     strategy:
       fail-fast: false
       matrix:
         language: ["python"]
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -151,6 +148,9 @@ jobs:
     name: Docker Image Security Scan
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
