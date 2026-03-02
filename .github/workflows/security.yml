@@ -65,7 +65,7 @@ jobs:
           safety check || echo "::warning::Found security vulnerabilities in dependencies"
         continue-on-error: true
       - name: Upload safety report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: safety-report
@@ -91,7 +91,7 @@ jobs:
           bandit -r kubrick_cli -f json -o bandit-report.json || true
           bandit -r kubrick_cli -ll
       - name: Upload bandit report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bandit-report
@@ -115,7 +115,7 @@ jobs:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
         continue-on-error: true
       - name: Upload Semgrep report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: semgrep-report
