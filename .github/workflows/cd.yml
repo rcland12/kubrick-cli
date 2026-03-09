@@ -123,7 +123,7 @@ jobs:
             type=semver,pattern={{major}},value=v${{ needs.check-version.outputs.version }}
             type=raw,value=latest
       - name: Build and push Docker images
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         id: docker_build
         with:
           context: .
