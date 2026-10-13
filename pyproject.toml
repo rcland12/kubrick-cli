@@ -13,7 +13,7 @@ authors = [
     {name = "Russell Land", email = "rcland12@gmail.com"}
 ]
 dependencies = [
-    "rich>=13.0.0",
+    "rich>=15.0.0",
     "prompt_toolkit>=3.0.36",
     "cryptography>=42.0.0",
 ]
