@@ -1,130 +1,76 @@
-#!/usr/bin/env python3
-"""Test script for Kubrick configuration system."""
+"""Tests for KubrickConfig."""
 
-from datetime import datetime
+import json
+
 from kubrick_cli.config import KubrickConfig
 
 
-def test_config():
-    """Test configuration management."""
-    print("\n" + "=" * 60)
-    print("Testing Kubrick Configuration System")
-    print("=" * 60 + "\n")
-
-    print("1. Initializing config...")
+def test_defaults_and_first_run(isolated_home):
     config = KubrickConfig(skip_wizard=True)
-    print(f"   ✓ Config directory: {config.kubrick_dir}")
-    print(f"   ✓ Config file: {config.config_file}")
-    print(f"   ✓ Conversations dir: {config.conversations_dir}")
-
-    print("\n2. Testing config values...")
-    triton_url = config.get("triton_url")
-    print(f"   ✓ triton_url: {triton_url}")
-    print(f"   ✓ model_name: {config.get('model_name')}")
-    print(f"   ✓ auto_save_conversations: {config.get('auto_save_conversations')}")
-
-    print("\n3. Testing config updates...")
-    config.set("test_key", "test_value")
-    print("   ✓ Set test_key = test_value")
-    assert config.get("test_key") == "test_value"
-    print(f"   ✓ Verified test_key = {config.get('test_key')}")
-
-    print("\n4. Testing conversation persistence...")
-    conv_id = datetime.now().strftime("%Y%m%d_%H%M%S_test")
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello!"},
-        {"role": "assistant", "content": "Hi! How can I help you?"},
-    ]
-    metadata = {
-        "working_dir": "/test/path",
-        "triton_url": "localhost:8000",
-    }
-
-    config.save_conversation(conv_id, messages, metadata)
-    print(f"   ✓ Saved conversation: {conv_id}")
-
-    print("\n5. Testing conversation loading...")
-    loaded = config.load_conversation(conv_id)
-    assert loaded is not None
-    print(f"   ✓ Loaded conversation: {conv_id}")
-    print(f"   ✓ Messages count: {len(loaded['messages'])}")
-    print(f"   ✓ Metadata: {loaded['metadata']}")
-
-    print("\n6. Testing conversation listing...")
-    conversations = config.list_conversations(limit=5)
-    print(f"   ✓ Found {len(conversations)} conversations")
-    for conv in conversations[:3]:
-        print(f"      - {conv['id']}: {conv['message_count']} messages")
-
-    print("\n7. Testing conversation deletion...")
-    result = config.delete_conversation(conv_id)
-    assert result is True
-    print(f"   ✓ Deleted conversation: {conv_id}")
-
-    loaded = config.load_conversation(conv_id)
-    assert loaded is None
-    print("   ✓ Verified deletion")
-
-    print("\n8. Testing conversation loading from file path...")
-    import tempfile
-    import json
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        test_conv_data = {
-            "id": "external_test",
-            "messages": [
-                {"role": "user", "content": "Test from file"},
-                {"role": "assistant", "content": "Response from file"},
-            ],
-            "metadata": {"source": "external_file"},
-        }
-        json.dump(test_conv_data, f)
-        temp_file_path = f.name
-
-    print(f"   ✓ Created temp conversation file: {temp_file_path}")
-
-    loaded_from_path = config.load_conversation(temp_file_path)
-    assert loaded_from_path is not None
-    assert loaded_from_path["id"] == "external_test"
-    assert len(loaded_from_path["messages"]) == 2
-    print("   ✓ Loaded conversation from file path")
-    print(f"   ✓ Messages: {len(loaded_from_path['messages'])}")
-
-    from pathlib import Path
-
-    home_relative = Path(temp_file_path).expanduser()
-    loaded_home = config.load_conversation(str(home_relative))
-    assert loaded_home is not None
-    print("   ✓ Loaded using expanded path")
-
-    Path(temp_file_path).unlink()
-    print("   ✓ Cleaned up temp file")
-
-    print("\n9. Testing get_all()...")
-    all_config = config.get_all()
-    print(f"   ✓ Got {len(all_config)} config values:")
-    for key, value in list(all_config.items())[:5]:
-        print(f"      - {key}: {value}")
-    print(f"      ... and {len(all_config) - 5} more")
-
-    print("\n" + "=" * 60)
-    print("All tests PASSED! ✓")
-    print("=" * 60 + "\n")
-    print(f"Configuration is stored at: {config.config_file}")
-    print(f"Conversations are stored at: {config.conversations_dir}")
-    print("")
+    assert config.kubrick_dir == isolated_home / ".kubrick"
+    assert config.config_file.exists()
+    assert config.get("permission_mode") == "default"
+    assert config.get("tool_calling") == "auto"
 
 
-if __name__ == "__main__":
-    import sys
+def test_env_override_and_coercion(monkeypatch):
+    config = KubrickConfig(skip_wizard=True)
+    monkeypatch.setenv("KUBRICK_MAX_ITERATIONS", "7")
+    monkeypatch.setenv("KUBRICK_TRITON_URL", "gpu-box:8000")
+    assert config.get("max_iterations") == 7
+    assert config.get("triton_url") == "gpu-box:8000"
 
-    try:
-        success = test_config()
-        sys.exit(0 if success else 1)
-    except Exception as e:
-        print(f"\n✗ Test failed: {e}")
-        import traceback
 
-        print(traceback.format_exc())
-        sys.exit(1)
+def test_session_override_is_not_saved():
+    config = KubrickConfig(skip_wizard=True)
+    config.override("provider", "anthropic")
+    assert config.get("provider") == "anthropic"
+    saved = json.loads(config.config_file.read_text())
+    assert saved["provider"] != "anthropic"
+
+
+def test_set_persists():
+    config = KubrickConfig(skip_wizard=True)
+    config.set("max_iterations", 12)
+    assert KubrickConfig(skip_wizard=True).get("max_iterations") == 12
+
+
+def test_legacy_plaintext_keys_migrate_to_store(isolated_home):
+    kdir = isolated_home / ".kubrick"
+    kdir.mkdir()
+    (kdir / "config.json").write_text(
+        json.dumps(
+            {
+                "provider": "anthropic",
+                "anthropic_api_key": "sk-ant-legacy",
+                "enable_task_classification": True,
+            }
+        )
+    )
+    config = KubrickConfig(skip_wizard=True)
+    saved = json.loads(config.config_file.read_text())
+    assert "anthropic_api_key" not in saved
+    assert "enable_task_classification" not in saved
+    assert config.get_secret("anthropic_api_key") == "sk-ant-legacy"
+    assert "sk-ant-legacy" not in (kdir / "credentials.json").read_text()
+
+
+def test_get_secret_prefers_env(monkeypatch):
+    config = KubrickConfig(skip_wizard=True)
+    config.credentials.set("openai_api_key", "stored")
+    assert config.get_secret("openai_api_key", ["OPENAI_API_KEY"]) == "stored"
+    monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+    assert config.get_secret("openai_api_key", ["OPENAI_API_KEY"]) == "from-env"
+
+
+def test_conversation_round_trip(tmp_path):
+    config = KubrickConfig(skip_wizard=True)
+    messages = [{"role": "user", "content": "hi"}]
+    config.save_conversation("abc", messages, {"working_dir": "/x"})
+    assert config.load_conversation("abc")["messages"] == messages
+    assert config.list_conversations()[0]["id"] == "abc"
+    path = tmp_path / "conv.json"
+    path.write_text(json.dumps({"id": "ext", "messages": messages}))
+    assert config.load_conversation(str(path))["id"] == "ext"
+    assert config.delete_conversation("abc") is True
+    assert config.load_conversation("abc") is None

@@ -20,7 +20,6 @@ Both registries have identical images. Choose whichever you prefer!
 When Docker creates files, they're owned by the user running inside the container. If the container runs as root (UID 0), all created files will be owned by root on your host system, making them difficult to edit or delete without `sudo`.
 
 **The Solution:** Run the container with your host UID/GID using the `--user` flag. This ensures:
-
 - Files created by Kubrick are owned by you
 - No permission errors when editing files
 - Compatibility between pip and Docker installations
@@ -51,7 +50,6 @@ You must pass `--user $(id -u):$(id -g)` with every command.
 ### Technical Details
 
 The Kubrick Docker image is designed to work with any UID/GID:
-
 - `/workspace` and `/home/kubrick` have `chmod 1777` (world-writable with sticky bit)
 - The container runs as the specified user at runtime
 - This is the same approach used by VS Code Dev Containers and GitLab CI
@@ -104,7 +102,7 @@ cd /path/to/your/project
 kubrick-docker
 
 # With arguments
-kubrick-docker --triton-url my-server:8000
+kubrick-docker --provider anthropic --model claude-sonnet-5-5
 kubrick-docker --load 20240118_143022
 ```
 
@@ -138,7 +136,7 @@ rm ~/.local/bin/kubrick-docker
 
 ### Option 2: Use Docker Compose
 
-Docker Compose provides a convenient way to run Kubrick without typing long docker commands. The kubrick-cli repository includes a `docker-compose.yml` file that you can reference from any project directory.
+Docker Compose provides a convenient way to run Kubrick without typing long docker commands. The kubrick-cli repository includes a `docker-compose.yaml` file that you can reference from any project directory.
 
 See [Using Docker Compose](#using-docker-compose) section below for details.
 
@@ -193,10 +191,10 @@ Then run:
 cd /path/to/your/project
 
 # Run kubrick (replace with your kubrick-cli path)
-docker compose -f ~/dev/kubrick-cli/docker-compose.yml run --rm kubrick
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
 ```
 
-**Note:** The docker-compose.yml file is in the kubrick-cli repository and uses `${UID}:${GID}` from your environment. See [Using Docker Compose](#using-docker-compose) for details.
+**Note:** The docker-compose.yaml file is in the kubrick-cli repository and uses `${UID}:${GID}` from your environment. See [Using Docker Compose](#using-docker-compose) for details.
 
 ## Basic Usage
 
@@ -224,8 +222,9 @@ docker run --rm -it \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
-  rcland12/kubrick-cli \
-  --triton-url my-server:8000
+  -e KUBRICK_PROVIDER=triton \
+  -e KUBRICK_TRITON_URL=my-server:8000 \
+  rcland12/kubrick-cli
 ```
 
 ### Load Previous Conversation
@@ -253,7 +252,7 @@ docker run --rm -it \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
   rcland12/kubrick-cli \
-  --model-name my-llm-model
+  --model my-llm-model
 ```
 
 ## Understanding the Command
@@ -292,7 +291,8 @@ docker run ... rcland12/kubrick-cli [kubrick arguments]
 # Custom Triton URL
 docker run --rm -it --network host --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
-  rcland12/kubrick-cli --triton-url server:8000
+  -e KUBRICK_PROVIDER=triton -e KUBRICK_TRITON_URL=server:8000 \
+  rcland12/kubrick-cli
 
 # Load conversation
 docker run --rm -it --network host --user $(id -u):$(id -g) \
@@ -302,14 +302,17 @@ docker run --rm -it --network host --user $(id -u):$(id -g) \
 # Multiple arguments
 docker run --rm -it --network host --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
-  rcland12/kubrick-cli --triton-url server:8000 --model-name custom-model
+  rcland12/kubrick-cli --provider openai_compatible --model qwen3-coder:30b
 ```
 
 ## Configuration
 
 ### Using Environment Variables
 
-Override defaults with environment variables:
+Any setting can be overridden with a `KUBRICK_<SETTING>` environment variable (e.g.
+`KUBRICK_TRITON_URL`, `KUBRICK_OPENAI_COMPATIBLE_MODEL`), and API keys can come from
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENAI_COMPATIBLE_API_KEY`. Setting
+`KUBRICK_PROVIDER` also skips the first-run setup wizard:
 
 ```bash
 docker run --rm -it \
@@ -319,10 +322,16 @@ docker run --rm -it \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
-  -e TRITON_URL=my-server:8000 \
-  -e TRITON_MODEL_NAME=custom-model \
+  -e KUBRICK_PROVIDER=openai_compatible \
+  -e KUBRICK_OPENAI_COMPATIBLE_BASE_URL=http://gpu-box:11434/v1 \
+  -e KUBRICK_OPENAI_COMPATIBLE_MODEL=qwen3-coder:30b \
+  -e ANTHROPIC_API_KEY \
   rcland12/kubrick-cli
 ```
+
+The `kubrick-docker` wrapper doesn't pass environment variables into the container. With
+the wrapper, store keys with `kubrick-docker auth login <provider>` (they're kept,
+encrypted, in the mounted `~/.kubrick`) or use `docker run` directly as above.
 
 ### Config File
 
@@ -337,6 +346,14 @@ You: exit
 # Future runs use saved config automatically
 docker run ... rcland12/kubrick-cli
 ```
+
+### Credentials in Docker
+
+Keys stored with `kubrick auth login` go to `~/.kubrick/credentials.json` (encrypted with a
+machine-bound key). Containers usually have no OS machine ID, so the container gets its own
+credential slot: you log in once inside the container, separately from the host. Passing
+keys as environment variables (`-e ANTHROPIC_API_KEY`) avoids this. See
+[SECURITY.md](SECURITY.md#credential-storage).
 
 ## File Access
 
@@ -402,11 +419,11 @@ Configuration and history are shared via `~/.kubrick`. Files in each project are
 
 ## Using Docker Compose
 
-Docker Compose provides a convenient way to run Kubrick without typing long docker commands. The kubrick-cli repository includes a `docker-compose.yml` file that you can reference from any project directory.
+Docker Compose provides a convenient way to run Kubrick without typing long docker commands. The kubrick-cli repository includes a `docker-compose.yaml` file that you can reference from any project directory.
 
 ### Configuration File
 
-The `docker-compose.yml` file in the kubrick-cli repository:
+The `docker-compose.yaml` file in the kubrick-cli repository:
 
 ```yaml
 services:
@@ -417,7 +434,7 @@ services:
     network_mode: host
     stdin_open: true
     tty: true
-    user: "${UID}:${GID}" # CRITICAL: Uses your UID/GID for correct permissions
+    user: "${UID}:${GID}"  # CRITICAL: Uses your UID/GID for correct permissions
     environment:
       HOME: /home/kubrick
     volumes:
@@ -446,18 +463,18 @@ Then reload your shell:
 source ~/.bashrc  # or source ~/.zshrc
 ```
 
-This allows Docker Compose to use your UID/GID from the `docker-compose.yml` file.
+This allows Docker Compose to use your UID/GID from the `docker-compose.yaml` file.
 
 ### Usage from Any Project Directory
 
-**This is the recommended approach.** You don't need to copy the docker-compose.yml file to each project. Instead, reference it using the `-f` flag:
+**This is the recommended approach.** You don't need to copy the docker-compose.yaml file to each project. Instead, reference it using the `-f` flag:
 
 ```bash
 # Navigate to YOUR project (the one you want to work on)
 cd ~/dev/your-project
 
 # Run kubrick using the compose file from kubrick-cli repo
-docker compose -f /path/to/kubrick-cli/docker-compose.yml run --rm kubrick
+docker compose -f /path/to/kubrick-cli/docker-compose.yaml run --rm kubrick
 ```
 
 **Example workflow:**
@@ -465,28 +482,28 @@ docker compose -f /path/to/kubrick-cli/docker-compose.yml run --rm kubrick
 ```bash
 # Work on project 1
 cd ~/dev/my-web-app
-docker compose -f ~/dev/kubrick-cli/docker-compose.yml run --rm kubrick
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
 
 # Work on project 2
 cd ~/dev/my-api-server
-docker compose -f ~/dev/kubrick-cli/docker-compose.yml run --rm kubrick
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
 
 # Work on project 3
 cd ~/projects/data-pipeline
-docker compose -f ~/dev/kubrick-cli/docker-compose.yml run --rm kubrick
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
 ```
 
 **How it works:**
 
 - `${PWD}` (your current directory) is mounted to `/workspace` in the container
 - You can work on any project by just changing directories
-- No need to copy docker-compose.yml to each project
+- No need to copy docker-compose.yaml to each project
 
 **With arguments:**
 
 ```bash
 cd ~/dev/your-project
-docker compose -f ~/dev/kubrick-cli/docker-compose.yml run --rm kubrick --triton-url my-server:8000
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick --provider triton
 ```
 
 ### Usage from kubrick-cli Directory
@@ -511,7 +528,7 @@ export UID=$(id -u)
 export GID=$(id -g)
 
 # Create alias (replace with your actual path to kubrick-cli)
-alias kubrick='docker compose -f ~/dev/kubrick-cli/docker-compose.yml run --rm kubrick'
+alias kubrick='docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick'
 ```
 
 Reload your shell:
@@ -525,7 +542,7 @@ source ~/.bashrc  # or source ~/.zshrc
 ```bash
 cd ~/dev/any-project
 kubrick
-kubrick --triton-url my-server:8000
+kubrick --provider triton
 kubrick --load 20240118_143022
 ```
 
@@ -534,15 +551,30 @@ kubrick --load 20240118_143022
 - **Always navigate to your project directory first** before running the command
 - **Must export UID and GID** in your shell for correct file permissions
 - The `-f` flag tells docker compose where to find the yaml file
-- The `${PWD}` variable in docker-compose.yml automatically uses your current directory
-- The `${UID}:${GID}` in docker-compose.yml ensures files are owned by you
+- The `${PWD}` variable in docker-compose.yaml automatically uses your current directory
+- The `${UID}:${GID}` in docker-compose.yaml ensures files are owned by you
 - Configuration and conversation history are shared across all projects via `~/.kubrick`
+
+## Updating
+
+`kubrick update` inside a container only tells you what to run, since the container can't
+replace its own image. On the host:
+
+```bash
+docker pull rcland12/kubrick-cli:latest     # or ghcr.io/rcland12/kubrick-cli:latest
+```
+
+## Development sandbox
+
+For working on Kubrick itself, `make sandbox` (see [CONTRIBUTING.md](../CONTRIBUTING.md))
+builds `docker/sandbox.Dockerfile` and runs your checkout's code in a container that can
+only see the project directory, so anything the agent installs stays inside it.
 
 ## Troubleshooting
 
 ### Cannot Connect to Triton
 
-**Error:** `Cannot connect to Triton server at localhost:8000`
+**Error:** `Triton (localhost:8000): ...` (connection refused or timed out)
 
 **Solutions:**
 
@@ -560,7 +592,7 @@ kubrick --load 20240118_143022
 
 3. Use custom URL if Triton is not on localhost:
    ```bash
-   docker run ... rcland12/kubrick-cli --triton-url my-server:8000
+   docker run ... -e KUBRICK_TRITON_URL=my-server:8000 rcland12/kubrick-cli --provider triton
    ```
 
 ### Files Not Found
@@ -656,7 +688,7 @@ source ~/.bashrc  # or source ~/.zshrc
 ```bash
 cd /path/to/project
 kubrick
-kubrick --triton-url my-server:8000
+kubrick --provider triton
 kubrick --load 20240118_143022
 ```
 
@@ -665,5 +697,5 @@ kubrick --load 20240118_143022
 ## Requirements
 
 - Docker 20.10+
-- Triton server accessible at `localhost:8000` (or custom URL)
+- A reachable model backend (local OpenAI-compatible server, Triton, or API credentials)
 - Project directory with files you want to work on

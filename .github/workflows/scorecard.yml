@@ -1,0 +1,36 @@
+# OSSF Scorecard lives in its own workflow: with publish_results it requires the
+# workflow file to have read-only top-level permissions and no container jobs,
+# which security.yml (Semgrep runs in a container) can't satisfy.
+name: OSSF Scorecard
+
+on:
+  push:
+    branches: ["master"]
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Run OSSF Scorecard
+        uses: ossf/scorecard-action@v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - name: Upload SARIF results to code scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif

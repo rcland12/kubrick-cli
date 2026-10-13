@@ -2,14 +2,16 @@ name: Security Scanning
 
 on:
   push:
-    branches: ["master", "staging"]
+    branches: ["master", "staging", "**"]
   pull_request:
     branches: ["master", "staging"]
   schedule:
     - cron: "0 0 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
+  security-events: write
   actions: read
 
 jobs:
@@ -20,22 +22,24 @@ jobs:
       actions: read
       contents: read
       security-events: write
+
     strategy:
       fail-fast: false
       matrix:
         language: ["python"]
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{matrix.language}}"
 
@@ -62,7 +66,7 @@ jobs:
           safety check || echo "::warning::Found security vulnerabilities in dependencies"
         continue-on-error: true
       - name: Upload safety report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: safety-report
@@ -88,7 +92,7 @@ jobs:
           bandit -r kubrick_cli -f json -o bandit-report.json || true
           bandit -r kubrick_cli -ll
       - name: Upload bandit report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bandit-report
@@ -112,52 +116,24 @@ jobs:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
         continue-on-error: true
       - name: Upload Semgrep report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: semgrep-report
           path: semgrep-report.json
           retention-days: 30
 
-  ossf-scorecard:
-    name: OSSF Scorecard
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' || github.event_name == 'schedule'
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-      security-events: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Run OSSF Scorecard
-        uses: ossf/scorecard-action@v2.4.3
-        with:
-          results_file: results.sarif
-          results_format: sarif
-          publish_results: true
-      - name: Upload SARIF results to code scanning
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: results.sarif
-
   docker-scan:
     name: Docker Image Security Scan
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
-    permissions:
-      contents: read
-      security-events: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Build Docker image for scanning
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -172,7 +148,7 @@ jobs:
           output: "trivy-results.sarif"
           severity: "CRITICAL,HIGH"
       - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: "trivy-results.sarif"

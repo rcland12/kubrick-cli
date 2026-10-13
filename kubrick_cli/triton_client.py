@@ -91,7 +91,12 @@ class TritonLLMClient:
 
             byte_buffer = b""
             while True:
-                chunk = response.read(1024)
+                # read1 returns whatever has arrived; read(n) blocks until n
+                # bytes on chunked responses, which makes streaming laggy.
+                if isinstance(response, http.client.HTTPResponse):
+                    chunk = response.read1(65536)
+                else:
+                    chunk = response.read(1024)
                 if not chunk:
                     break
 
@@ -116,6 +121,8 @@ class TritonLLMClient:
 
                     try:
                         data = json.loads(line)
+                        if not isinstance(data, dict):
+                            continue
 
                         output_data = None
                         if "text_output" in data:
@@ -123,20 +130,30 @@ class TritonLLMClient:
                         elif "outputs" in data and len(data["outputs"]) > 0:
                             output_data = data["outputs"][0].get("data", [""])[0]
 
-                        if output_data:
-                            try:
-                                chunk_data = json.loads(output_data)
+                        if not output_data:
+                            continue
+                        if not isinstance(output_data, str):
+                            output_data = str(output_data)
 
-                                if chunk_data.get("type") == "chunk":
-                                    yield chunk_data.get("content", "")
-                                elif chunk_data.get("type") == "complete":
-                                    return
-                                elif chunk_data.get("type") == "error":
-                                    raise Exception(
-                                        f"LLM error: {chunk_data.get('content')}"
-                                    )
-                            except (json.JSONDecodeError, TypeError):
-                                yield output_data
+                        try:
+                            chunk_data = json.loads(output_data)
+                        except (json.JSONDecodeError, TypeError):
+                            chunk_data = None
+
+                        # Raw text tokens can themselves be valid JSON scalars
+                        # ("42", "null", "true"); only dicts with a "type" are
+                        # protocol chunks, everything else is model text.
+                        if not isinstance(chunk_data, dict) or "type" not in chunk_data:
+                            yield output_data
+                            continue
+
+                        chunk_type = chunk_data.get("type")
+                        if chunk_type == "chunk":
+                            yield chunk_data.get("content", "")
+                        elif chunk_type == "complete":
+                            return
+                        elif chunk_type == "error":
+                            raise Exception(f"LLM error: {chunk_data.get('content')}")
 
                     except json.JSONDecodeError:
                         continue

@@ -1,2 +1,17 @@
 __pycache__/
 *.egg-info/
+.venv/
+venv/
+.coverage
+coverage.xml
+.pytest_cache/
+dist/
+build/
+
+# Local dev environment (make dev / make run)
+.dev/
+
+# Credentials: never commit
+.env
+.env.*
+!.env.example

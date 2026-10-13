@@ -15,6 +15,7 @@ SHELL ["/bin/sh", "-euxc"]
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    KUBRICK_IN_DOCKER=1 \
     HOME=/home/kubrick
 
 RUN apt-get update && \
@@ -24,8 +25,11 @@ RUN apt-get update && \
     chmod 1777 /workspace ${HOME}
 
 WORKDIR /workspace
+# Optional extras baked into the image (bedrock pulls in boto3).
+ARG KUBRICK_EXTRAS=bedrock
 COPY --from=builder /app/dist/ /tmp/dist/
-RUN pip install --no-cache-dir /tmp/dist/*.whl && \
+RUN wheel="$(ls /tmp/dist/*.whl)" && \
+    pip install --no-cache-dir "${wheel}${KUBRICK_EXTRAS:+[$KUBRICK_EXTRAS]}" && \
     rm -rf /tmp/dist
 
 ENTRYPOINT ["kubrick"]

@@ -263,3 +263,73 @@ class TestToolExecutor:
 
         assert result["success"] is False
         assert "error" in result
+
+
+class TestNewToolBehaviour:
+    """Line numbers, unique edits, regex search, argument validation."""
+
+    def test_read_numbers_lines_and_pages(self, temp_workspace):
+        from kubrick_cli.tools import ToolExecutor
+
+        (temp_workspace / "f.txt").write_text(
+            "\n".join(f"line{i}" for i in range(1, 11))
+        )
+        ex = ToolExecutor(working_dir=str(temp_workspace))
+        out = ex.execute("read_file", {"file_path": "f.txt", "offset": 3, "limit": 2})
+        assert out["success"]
+        assert "     3\tline3" in out["result"] and "line5" not in out["result"]
+        assert "lines 3-4 of 10" in out["result"]
+
+    def test_edit_requires_unique_match(self, temp_workspace):
+        from kubrick_cli.tools import ToolExecutor
+
+        (temp_workspace / "f.py").write_text("x = 1\nx = 1\n")
+        ex = ToolExecutor(working_dir=str(temp_workspace))
+        out = ex.execute(
+            "edit_file",
+            {"file_path": "f.py", "old_string": "x = 1", "new_string": "x = 2"},
+        )
+        assert not out["success"] and "2 places" in out["error"]
+        out = ex.execute(
+            "edit_file",
+            {
+                "file_path": "f.py",
+                "old_string": "x = 1",
+                "new_string": "x = 2",
+                "replace_all": True,
+            },
+        )
+        assert out["success"]
+        assert (temp_workspace / "f.py").read_text() == "x = 2\nx = 2\n"
+
+    def test_search_is_regex(self, temp_workspace):
+        from kubrick_cli.tools import ToolExecutor
+
+        (temp_workspace / "a.py").write_text("def foo():\n    pass\ndef bar():\n")
+        ex = ToolExecutor(working_dir=str(temp_workspace))
+        out = ex.execute(
+            "search_files", {"pattern": r"def \w+\(", "file_pattern": "*.py"}
+        )
+        assert out["success"] and "2 match" in out["result"]
+        assert not ex.execute("search_files", {"pattern": "("})["success"]
+
+    def test_bash_reports_exit_code(self, temp_workspace):
+        from kubrick_cli.tools import ToolExecutor
+
+        ex = ToolExecutor(working_dir=str(temp_workspace))
+        out = ex.execute("run_bash", {"command": "echo hi; exit 3"})
+        assert (
+            out["success"]
+            and out["result"].startswith("Exit code: 3")
+            and "hi" in out["result"]
+        )
+
+    def test_validation_coerces_and_rejects(self, temp_workspace):
+        from kubrick_cli.tools import validate_arguments
+
+        args = {"file_path": "a", "offset": "5"}
+        assert validate_arguments("read_file", args) is None and args["offset"] == 5
+        assert "must be of type string" in validate_arguments(
+            "read_file", {"file_path": 3}
+        )
+        assert "Unknown tool" in validate_arguments("nope", {})

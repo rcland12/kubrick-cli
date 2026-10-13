@@ -1,456 +1,267 @@
-"""Context management for keeping conversations within model limits."""
+"""Context window tracking and compaction."""
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from rich.console import Console
+from .messages import Usage, message_text_for_counting
+from .tool_protocol import to_plain_messages
 
-console = Console()
+# Fallback context windows when neither config nor the backend says.
+DEFAULT_WINDOWS = {
+    "anthropic": 200000,
+    "openai": 128000,
+    "bedrock": 200000,
+    "openai_compatible": 32768,
+    "triton": 32768,
+}
+# Known model families (prefix match on the model id, longest first).
+MODEL_WINDOWS = {
+    "claude-haiku-4-5": 200000,
+    "claude-sonnet-4-5": 200000,
+    "claude-opus-4-5": 200000,
+    "claude-opus-4-1": 200000,
+    "claude-3": 200000,
+    "claude-": 1000000,  # Claude 4.6+ / 5.x
+    "gpt-5": 400000,
+    "gpt-4.1": 1000000,
+    "gpt-4o": 128000,
+    "gpt-4": 128000,
+}
+
+SUMMARY_PREFIX = "[Summary of the earlier conversation, written to save context]"
+
+SUMMARY_INSTRUCTIONS = """Summarize the conversation above so the work can continue \
+from the summary alone. Include:
+- The user's goals and explicit requests, verbatim where wording matters
+- Key decisions, constraints, and user preferences
+- Files read or changed, with the important details of each change
+- Commands run and their outcomes (tests passing/failing, errors)
+- Current state: what is done, what is in progress, what remains
+Be specific and complete; omit pleasantries."""
 
 
 class TokenCounter:
-    """
-    Lightweight token counter using heuristic estimation.
+    """Heuristic token estimates (~3.5 characters per token for code and prose)."""
 
-    Uses character-based estimation with provider-specific multipliers.
-    Good enough for context management without heavyweight dependencies.
-    """
+    CHARS_PER_TOKEN = 3.5
 
-    PROVIDER_RATIOS = {
-        "openai": 4.0,  # ~4 chars per token for GPT models
-        "anthropic": 3.8,  # Claude tends to be slightly more efficient
-        "triton": 4.0,  # Assume similar to GPT (configurable)
-    }
+    @classmethod
+    def estimate_tokens(cls, text: str) -> int:
+        return int(len(text or "") / cls.CHARS_PER_TOKEN)
 
-    @staticmethod
-    def estimate_tokens(text: str, provider: str = "openai") -> int:
-        """
-        Estimate token count for text based on provider.
+    @classmethod
+    def count_message_tokens(cls, message: Dict[str, Any]) -> int:
+        return 4 + cls.estimate_tokens(message_text_for_counting(message))
 
-        Args:
-            text: Text to estimate tokens for
-            provider: Provider name (openai, anthropic, triton)
-
-        Returns:
-            Estimated token count
-        """
-        if not text:
-            return 0
-
-        ratio = TokenCounter.PROVIDER_RATIOS.get(provider, 4.0)
-        return int(len(text) / ratio)
-
-    @staticmethod
-    def count_message_tokens(message: Dict, provider: str) -> int:
-        """
-        Count tokens in a single message (role + content).
-
-        Args:
-            message: Message dict with 'role' and 'content'
-            provider: Provider name
-
-        Returns:
-            Estimated token count for this message
-        """
-        role_tokens = 2
-        content_tokens = TokenCounter.estimate_tokens(
-            message.get("content", ""), provider
-        )
-        return role_tokens + content_tokens
-
-    @staticmethod
-    def count_messages_tokens(messages: List[Dict], provider: str) -> int:
-        """
-        Count total tokens across all messages.
-
-        Args:
-            messages: List of message dicts
-            provider: Provider name
-
-        Returns:
-            Estimated total token count
-        """
-        return sum(TokenCounter.count_message_tokens(msg, provider) for msg in messages)
+    @classmethod
+    def count_messages_tokens(cls, messages: List[Dict[str, Any]]) -> int:
+        return sum(cls.count_message_tokens(m) for m in messages)
 
 
 class ToolResultTruncator:
-    """
-    Truncates large tool results before adding to message history.
+    """Caps tool output size before it enters the conversation."""
 
-    Prevents scenarios where a single 'read_file' of a 10MB file
-    consumes the entire context window.
-    """
-
-    def __init__(self, max_chars: int = 10000):
-        """
-        Initialize truncator.
-
-        Args:
-            max_chars: Maximum characters per tool result
-        """
+    def __init__(self, max_chars: int = 30000):
         self.max_chars = max_chars
 
     def truncate_result(self, result: str, tool_name: str) -> str:
-        """
-        Truncate a tool result if it exceeds max_chars.
-
-        Strategy:
-        - For short results: return as-is
-        - For long results: Keep beginning and end, add ellipsis
-        - Add metadata about truncation
-
-        Args:
-            result: Tool result string
-            tool_name: Name of the tool (for context in truncation message)
-
-        Returns:
-            Truncated result (or original if under limit)
-        """
-        result_str = str(result)
-
-        if len(result_str) <= self.max_chars:
-            return result_str
-
+        """Keep the head and tail of oversized output."""
+        result = str(result)
+        if len(result) <= self.max_chars:
+            return result
         keep_start = int(self.max_chars * 0.7)
-        keep_end = int(self.max_chars * 0.3)
-        truncated_chars = len(result_str) - self.max_chars
-
+        keep_end = self.max_chars - keep_start
+        dropped = len(result) - self.max_chars
         return (
-            result_str[:keep_start]
-            + f"\n\n... [truncated {truncated_chars} characters from {tool_name} output] ...\n\n"
-            + result_str[-keep_end:]
+            result[:keep_start]
+            + f"\n\n... [truncated {dropped} characters of {tool_name} output] ...\n\n"
+            + result[-keep_end:]
         )
-
-
-class MessageSummarizer:
-    """
-    Generates summaries of conversation history.
-
-    Used when context is critically high and simple trimming won't suffice.
-    Creates a condensed representation of middle conversation turns.
-    """
-
-    def __init__(self, llm_client, max_summary_tokens: int = 500):
-        """
-        Initialize summarizer.
-
-        Args:
-            llm_client: LLM provider for generating summaries
-            max_summary_tokens: Target size for summary
-        """
-        self.llm_client = llm_client
-        self.max_summary_tokens = max_summary_tokens
-
-    def summarize_messages(self, messages: List[Dict]) -> str:
-        """
-        Summarize a sequence of messages into a condensed form.
-
-        Args:
-            messages: List of messages to summarize
-
-        Returns:
-            Summary text suitable for injection as a user message
-        """
-        summary_prompt = self._build_summarization_prompt(messages)
-
-        try:
-            summary = self.llm_client.generate(
-                summary_prompt,
-                stream_options={"max_tokens": self.max_summary_tokens},
-            )
-            return f"[Context Summary]\n{summary}"
-        except Exception as e:
-            console.print(f"[red]Summarization failed: {e}[/red]")
-            return (
-                f"[Context Summary] {len(messages)} messages removed "
-                "due to context limits."
-            )
-
-    def _build_summarization_prompt(self, messages: List[Dict]) -> List[Dict]:
-        """
-        Build prompt asking LLM to summarize conversation history.
-
-        Args:
-            messages: Messages to summarize
-
-        Returns:
-            Prompt messages for summarization
-        """
-        conversation_text = "\n\n".join(
-            [f"{msg['role']}: {msg['content']}" for msg in messages]
-        )
-
-        return [
-            {
-                "role": "system",
-                "content": "You are a conversation summarizer. Create concise summaries.",
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Summarize this conversation segment in under 500 tokens, "
-                    f"focusing on key decisions, code changes, and important context:\n\n"
-                    f"{conversation_text}"
-                ),
-            },
-        ]
 
 
 class ContextManager:
     """
-    Manages conversation context to stay within model limits.
+    Tracks how full the context window is and compacts the conversation.
 
-    Responsibilities:
-    - Track token usage in real-time
-    - Enforce context window limits
-    - Trigger interventions (trim/summarize) when needed
-    - Preserve system messages and recent context
+    Token counts come from provider-reported usage when available (exact), plus
+    a heuristic estimate for messages added since the last response.
     """
 
-    def __init__(
-        self,
-        provider_name: str,
-        model_name: str,
-        config: Dict[str, Any],
-        llm_client=None,
-    ):
+    def __init__(self, provider, config: Dict[str, Any]):
         """
-        Initialize context manager with provider-specific settings.
-
         Args:
-            provider_name: Provider (openai, anthropic, triton)
-            model_name: Model name for window size lookup
-            config: Configuration dict with context management settings
-            llm_client: Optional LLM client for summarization
+            provider: ProviderAdapter (for window discovery and summarization)
+            config: Effective configuration values
         """
-        self.provider_name = provider_name
-        self.model_name = model_name
+        self.provider = provider
         self.config = config
-        self.token_counter = TokenCounter()
-        self.llm_client = llm_client
-
-        self.context_window = self._get_context_window()
-        self.max_output_tokens = config.get("max_output_tokens", 2048)
-
-        self.usage_threshold = config.get("context_usage_threshold", 0.75)
-        self.summarization_threshold = config.get(
-            "context_summarization_threshold", 0.85
+        self.usage_threshold = float(config.get("context_usage_threshold") or 0.8)
+        self.context_window = self._resolve_window()
+        configured_output = config.get("max_output_tokens")
+        self.max_output_tokens = int(configured_output) if configured_output else None
+        # Budget reserved for the response when deciding whether to compact.
+        self.reserved_output = min(
+            self.max_output_tokens or 8192, self.context_window // 4
         )
-        self.min_messages_to_keep = config.get("min_messages_to_keep", 4)
+        self._reported_tokens: Optional[int] = None
+        self._reported_message_count = 0
+        self.last_usage: Optional[Usage] = None
 
-        # Initialize summarizer if LLM client is available
-        if llm_client:
-            self.summarizer = MessageSummarizer(llm_client, max_summary_tokens=500)
-        else:
-            self.summarizer = None
+    def _resolve_window(self) -> int:
+        configured = self.config.get("context_window")
+        if configured:
+            return int(configured)
+        try:
+            reported = self.provider.context_window()
+        except Exception:
+            reported = None
+        if reported:
+            return int(reported)
+        model = (self.provider.model_name or "").lower()
+        for prefix in sorted(MODEL_WINDOWS, key=len, reverse=True):
+            if prefix in model:
+                return MODEL_WINDOWS[prefix]
+        return DEFAULT_WINDOWS.get(self.provider.provider_name, 32768)
 
-    def _get_context_window(self) -> int:
+    # --- Accounting ----------------------------------------------------------
+
+    def record_usage(self, usage: Optional[Usage], messages: List[Dict[str, Any]]):
+        """Record provider-reported usage for the response just appended to ``messages``."""
+        if usage is None or usage.context_tokens == 0:
+            return
+        self.last_usage = usage
+        self._reported_tokens = usage.context_tokens + usage.output_tokens
+        self._reported_message_count = len(messages)
+
+    def current_tokens(self, messages: List[Dict[str, Any]]) -> int:
+        """Best estimate of the tokens the conversation occupies."""
+        if self._reported_tokens is not None and self._reported_message_count <= len(
+            messages
+        ):
+            added = messages[self._reported_message_count :]
+            return self._reported_tokens + TokenCounter.count_messages_tokens(added)
+        return TokenCounter.count_messages_tokens(messages)
+
+    def usage_ratio(self, messages: List[Dict[str, Any]]) -> float:
+        """Fraction of the usable window (window minus reserved output) in use."""
+        usable = max(self.context_window - self.reserved_output, 1)
+        return self.current_tokens(messages) / usable
+
+    def needs_compaction(self, messages: List[Dict[str, Any]]) -> bool:
+        return self.usage_ratio(messages) >= self.usage_threshold
+
+    # --- Compaction ----------------------------------------------------------
+
+    def compact(
+        self, messages: List[Dict[str, Any]], focus: Optional[str] = None
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Get context window size for current model.
+        Replace older turns with a summary, keeping the system prompt and the
+        most recent turn(s) intact.
 
-        Uses model_max_context_override if set, otherwise uses model-specific defaults.
-
-        Returns:
-            Context window size in tokens
-        """
-        # Check for manual override first (for custom vLLM configurations)
-        override = self.config.get("model_max_context_override")
-        if override is not None:
-            return int(override)
-
-        # Otherwise use model-specific defaults
-        context_windows = self.config.get("context_windows", {})
-        return context_windows.get(
-            self.model_name, self.config.get("default_context_window", 8192)
-        )
-
-    def check_and_manage(
-        self, messages: List[Dict], reserve_output_tokens: bool = True
-    ) -> Tuple[List[Dict], Dict]:
-        """
-        Check current token usage and manage context if needed.
+        Cuts only at user-message boundaries so tool calls stay paired with
+        their results. Provider-native replay data (``raw``) is dropped from the
+        kept messages: Claude's thinking blocks are bound to the history that
+        produced them, which compaction changes.
 
         Args:
-            messages: Current conversation messages
-            reserve_output_tokens: Whether to reserve tokens for LLM output (default: True)
+            messages: The conversation
+            focus: Optional user guidance for what the summary should emphasize
 
         Returns:
-            Tuple of (managed_messages, metadata)
+            (new_messages, info) where info has tokens_before/tokens_after/action
         """
-        current_tokens = self.token_counter.count_messages_tokens(
-            messages, self.provider_name
-        )
+        before = self.current_tokens(messages)
+        system = [m for m in messages[:1] if m["role"] == "system"]
+        body = messages[len(system) :]
 
-        # Calculate available context (reserving space for output)
-        available_context = self.context_window
-        if reserve_output_tokens:
-            available_context -= self.max_output_tokens
+        cut = self._choose_cut(body)
+        if cut == 0:
+            # One enormous turn: shrink old tool outputs inside it instead.
+            new_body = self._shrink_tool_results(body)
+            action = "shrunk_tool_results"
+        else:
+            summary = self._summarize(system + body[:cut], focus)
+            summary_msg = {"role": "user", "content": f"{SUMMARY_PREFIX}\n\n{summary}"}
+            new_body = [summary_msg] + body[cut:]
+            action = "summarized"
 
-        metadata = {
-            "tokens_before": current_tokens,
-            "tokens_after": current_tokens,
-            "action_taken": None,
-            "reserved_output_tokens": (
-                self.max_output_tokens if reserve_output_tokens else 0
-            ),
+        new_messages = system + [_without_raw(m) for m in new_body]
+        self._reported_tokens = None
+        after = TokenCounter.count_messages_tokens(new_messages)
+        return new_messages, {
+            "action": action,
+            "tokens_before": before,
+            "tokens_after": after,
         }
 
-        usage_ratio = current_tokens / available_context
-
-        if usage_ratio >= self.summarization_threshold:
-            messages = self._summarize_and_trim(messages)
-            metadata["action_taken"] = "summarized"
-        elif usage_ratio >= self.usage_threshold:
-            # Target 60% of available context to leave room for growth
-            target_tokens = int(available_context * 0.6)
-            messages = self._trim_messages(messages, target_tokens)
-            metadata["action_taken"] = "trimmed"
-
-        current_tokens = self.token_counter.count_messages_tokens(
-            messages, self.provider_name
-        )
-
-        if current_tokens > available_context:
-            console.print("[red]⚠ Context critically full. Emergency reset.[/red]")
-            messages = self._emergency_reset(messages)
-            metadata["action_taken"] = "emergency_reset"
-
-        metadata["tokens_after"] = self.token_counter.count_messages_tokens(
-            messages, self.provider_name
-        )
-
-        return messages, metadata
-
-    def _trim_messages(self, messages: List[Dict], target_tokens: int) -> List[Dict]:
-        """
-        Trim oldest messages while preserving system and recent context.
-
-        Strategy:
-        1. Always preserve system message (index 0)
-        2. Always preserve last N messages (min_messages_to_keep)
-        3. Drop oldest user/assistant pairs from middle
-
-        Args:
-            messages: Messages to trim
-            target_tokens: Target token count
-
-        Returns:
-            Trimmed messages list
-        """
-        if len(messages) <= self.min_messages_to_keep + 1:
-            return messages
-
-        system_msg = messages[0]
-        recent_msgs = messages[-(self.min_messages_to_keep) :]
-        middle_msgs = messages[1 : -(self.min_messages_to_keep)]
-
-        trimmed_middle = []
-        accumulated_tokens = self.token_counter.count_message_tokens(
-            system_msg, self.provider_name
-        ) + sum(
-            self.token_counter.count_message_tokens(m, self.provider_name)
-            for m in recent_msgs
-        )
-
-        for msg in reversed(middle_msgs):
-            msg_tokens = self.token_counter.count_message_tokens(
-                msg, self.provider_name
-            )
-            if accumulated_tokens + msg_tokens <= target_tokens:
-                trimmed_middle.insert(0, msg)
-                accumulated_tokens += msg_tokens
-            else:
+    def _choose_cut(self, body: List[Dict[str, Any]]) -> int:
+        """Index in ``body`` where the kept tail starts (0 = nothing to summarize)."""
+        user_starts = [i for i, m in enumerate(body) if m["role"] == "user"]
+        if len(user_starts) <= 1:
+            return 0
+        tail_budget = int((self.context_window - self.reserved_output) * 0.3)
+        # Keep as many recent turns as fit in the tail budget, but at least the last.
+        cut = user_starts[-1]
+        for start in reversed(user_starts[:-1]):
+            if TokenCounter.count_messages_tokens(body[start:]) > tail_budget:
                 break
+            cut = start
+        return 0 if cut == user_starts[0] else cut
 
-        result = [system_msg] + trimmed_middle + recent_msgs
-
-        if len(trimmed_middle) < len(middle_msgs):
-            dropped = len(middle_msgs) - len(trimmed_middle)
-            result.insert(
-                1,
-                {
-                    "role": "user",
-                    "content": (
-                        f"[Context Note] {dropped} older messages trimmed "
-                        "to manage context."
-                    ),
-                },
-            )
-
-        return result
-
-    def _summarize_and_trim(self, messages: List[Dict]) -> List[Dict]:
-        """
-        Summarize middle messages and keep system + recent.
-
-        Args:
-            messages: Messages to summarize
-
-        Returns:
-            Summarized messages list
-        """
-        if len(messages) <= self.min_messages_to_keep + 1:
-            return messages
-
-        system_msg = messages[0]
-        recent_msgs = messages[-(self.min_messages_to_keep) :]
-        middle_msgs = messages[1 : -(self.min_messages_to_keep)]
-
-        if not middle_msgs:
-            return messages
-
-        # Try to use LLM-based summarization if available
-        if self.summarizer:
-            try:
-                console.print("[yellow]→ Summarizing conversation history...[/yellow]")
-                summary_text = self.summarizer.summarize_messages(middle_msgs)
-                summary_note = {
-                    "role": "user",
-                    "content": summary_text,
-                }
-            except Exception as e:
-                console.print(f"[red]Summarization failed: {e}[/red]")
-                # Fallback to simple note
-                summary_note = {
-                    "role": "user",
-                    "content": (
-                        f"[Context Summary] {len(middle_msgs)} messages were compressed "
-                        "to manage context window limits."
-                    ),
-                }
-        else:
-            # Fallback to simple note if no summarizer available
-            summary_note = {
-                "role": "user",
-                "content": (
-                    f"[Context Summary] {len(middle_msgs)} messages were compressed "
-                    "to manage context window limits."
-                ),
-            }
-
-        return [system_msg, summary_note] + recent_msgs
-
-    def _emergency_reset(self, messages: List[Dict]) -> List[Dict]:
-        """
-        Emergency: Keep only system + last user message.
-
-        Args:
-            messages: Messages to reset
-
-        Returns:
-            Minimal messages list
-        """
-        system_msg = messages[0] if messages else {"role": "system", "content": ""}
-        last_msg = (
-            messages[-1] if len(messages) > 1 else {"role": "user", "content": "..."}
+    def _summarize(self, messages: List[Dict[str, Any]], focus: Optional[str]) -> str:
+        transcript = to_plain_messages(messages)
+        # Leave room for the summary itself; trim the oldest content if needed.
+        budget_chars = int(
+            (self.context_window - 12000) * TokenCounter.CHARS_PER_TOKEN * 0.8
         )
+        while (
+            sum(len(m["content"]) for m in transcript) > budget_chars
+            and len(transcript) > 2
+        ):
+            transcript.pop(1)
+        instructions = SUMMARY_INSTRUCTIONS
+        if focus:
+            instructions += f"\n\nThe user asked the summary to focus on: {focus}"
+        request = transcript + [{"role": "user", "content": instructions}]
+        if request[0]["role"] != "system":
+            request.insert(
+                0, {"role": "system", "content": "You summarize coding sessions."}
+            )
+        try:
+            # No small max_tokens: reasoning models spend part of the budget thinking.
+            summary = self.provider.generate(request, stream_options={}).strip()
+        except Exception as e:
+            summary = ""
+            error = str(e)
+        else:
+            error = None
+        if not summary:
+            reason = f" (summarization failed: {error})" if error else ""
+            summary = f"{len(messages) - 1} earlier messages were removed to free context{reason}."
+        return summary
 
-        return [
-            system_msg,
-            {
-                "role": "user",
-                "content": (
-                    "[CONTEXT_RESET] Previous conversation exceeded context limits. "
-                    f"Starting fresh. Last message: {last_msg.get('content', '...')}"
-                ),
-            },
-        ]
+    @staticmethod
+    def _shrink_tool_results(body: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        tool_indices = [i for i, m in enumerate(body) if m["role"] == "tool"]
+        keep_recent = set(tool_indices[-4:])
+        shrunk = []
+        for i, msg in enumerate(body):
+            if (
+                msg["role"] == "tool"
+                and i not in keep_recent
+                and len(msg["content"]) > 500
+            ):
+                msg = dict(msg)
+                msg["content"] = (
+                    msg["content"][:300] + "\n[...older output removed to save context]"
+                )
+            shrunk.append(msg)
+        return shrunk
+
+
+def _without_raw(message: Dict[str, Any]) -> Dict[str, Any]:
+    if "raw" not in message:
+        return message
+    message = dict(message)
+    message.pop("raw")
+    return message

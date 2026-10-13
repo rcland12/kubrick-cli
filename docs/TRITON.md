@@ -1,419 +1,223 @@
 # Triton Backend Setup for Kubrick CLI
 
-Complete guide to setting up and configuring Triton Inference Server for use with Kubrick CLI.
+How to serve a model from NVIDIA Triton Inference Server so Kubrick can use it.
 
-## Requirements
+> **Is Triton the right choice?** For most local setups, an OpenAI-compatible
+> server (Ollama, vLLM, llama.cpp, LM Studio) is simpler and supports native tool
+> calling — see [PROVIDERS.md](PROVIDERS.md). Use Triton when your infrastructure
+> already runs it.
 
-Kubrick CLI requires a Triton Inference Server with a streaming LLM model that implements a specific HTTP endpoint.
+## How Kubrick talks to Triton
 
-### Server Requirements
+- **Protocol:** HTTP `POST /v2/models/{model}/generate_stream` with Server-Sent Events.
+- **Health check:** `GET /v2/health/live` (must return 200).
+- **Tool calling:** text-based. Triton models stream plain text, so Kubrick
+  describes its tools in the system prompt and the model calls them by writing
+  fenced blocks:
 
-- **Triton Inference Server** (version 2.x+)
-- **HTTP Protocol** (gRPC not required)
-- **Streaming Support** via Server-Sent Events (SSE)
-- **Python Backend** (recommended for custom LLM integration)
+  ````
+  ```tool_call
+  {"tool": "read_file", "parameters": {"file_path": "src/app.py"}}
+  ```
+  ````
 
-### Default Configuration
+  Tool results come back as a user message. No special model support is needed,
+  but instruction-tuned coding models follow the format far more reliably.
 
-- **Endpoint**: `http://localhost:8000`
-- **Model Name**: `llm_decoupled`
-- **Protocol**: HTTP with SSE streaming
-
-## Required Endpoint
-
-Your Triton model must implement the following custom endpoint:
-
-### Endpoint Specification
-
-- **Path**: `/v2/models/{model_name}/generate_stream`
-- **Method**: `POST`
-- **Content-Type**: `application/json`
-- **Accept**: `text/event-stream`
-
-### Request Format
-
-The client sends a JSON payload with the following structure:
+### Request
 
 ```json
 {
-  "text_input": "[{\"role\": \"user\", \"content\": \"Your message here\"}]",
-  "parameters": {
-    "streaming": true
-  }
+  "text_input": "[{\"role\": \"system\", \"content\": \"...\"}, {\"role\": \"user\", \"content\": \"Hello\"}]",
+  "parameters": {"streaming": true, "temperature": 0.7, "max_tokens": 2048}
 }
 ```
 
-**Fields:**
+- `text_input` — JSON-encoded list of `{"role", "content"}` messages (roles:
+  `system`, `user`, `assistant`). Maps to the model's `text_input` tensor.
+- `parameters` — Triton's generate extension passes this object as **request
+  parameters**, not as an input tensor. Read it in the model with
+  `request.parameters()`. `temperature` and `max_tokens` are only sent when set.
 
-- `text_input` (string): JSON-encoded array of message objects in OpenAI chat format
-  - Each message has `role` (user/assistant/system) and `content`
-  - Example: `[{"role": "user", "content": "Hello"}]`
+### Response
 
-- `parameters` (object): Streaming and generation options
-  - `streaming` (boolean): Must be `true` for streaming responses
-  - Additional parameters can be added (temperature, max_tokens, etc.)
-
-### Response Format
-
-The server must return an SSE (Server-Sent Events) stream with JSON chunks.
-
-#### Option 1: Direct JSON Chunks
+Each SSE event carries the `text_output` tensor:
 
 ```
-data: {"type": "chunk", "content": "Hello"}
-data: {"type": "chunk", "content": " world"}
-data: {"type": "complete"}
+data: {"model_name": "llm_decoupled", "model_version": "1", "text_output": "{\"type\": \"chunk\", \"content\": \"Hel\"}"}
+data: {"model_name": "llm_decoupled", "model_version": "1", "text_output": "{\"type\": \"chunk\", \"content\": \"lo\"}"}
+data: {"model_name": "llm_decoupled", "model_version": "1", "text_output": "{\"type\": \"complete\"}"}
 ```
 
-#### Option 2: Triton-Wrapped Format
+`text_output` should be a JSON chunk:
 
-```json
-{
-  "text_output": "{\"type\": \"chunk\", \"content\": \"text\"}",
-  "outputs": [{ "data": ["{\"type\": \"chunk\", \"content\": \"text\"}"] }]
-}
-```
+| `type`     | Meaning                                         |
+| ---------- | ----------------------------------------------- |
+| `chunk`    | `content` is the next piece of text             |
+| `complete` | End of the response                             |
+| `error`    | Generation failed; `content` is the message     |
 
-**Response Types:**
+A `text_output` that isn't a JSON object with a `type` is treated as raw text,
+so a model that streams plain tokens also works — but the JSON form lets the
+model report errors and end the stream explicitly.
 
-| Type       | Description                                | Required |
-| ---------- | ------------------------------------------ | -------- |
-| `chunk`    | Text/token chunk during streaming          | Yes      |
-| `complete` | Marks end of stream                        | Yes      |
-| `error`    | Error occurred (content has error message) | Optional |
+## Example model
 
-**Example Stream:**
+A complete, working example lives in
+[`examples/triton/llm_decoupled/`](../examples/triton/llm_decoupled/):
 
 ```
-data: {"type": "chunk", "content": "The"}
-data: {"type": "chunk", "content": " answer"}
-data: {"type": "chunk", "content": " is"}
-data: {"type": "chunk", "content": " 42"}
-data: {"type": "complete"}
+examples/triton/llm_decoupled/
+├── config.pbtxt
+└── 1/model.py
 ```
 
-## Model Configuration
-
-### Triton Model Repository Structure
-
-```
-model_repository/
-└── llm_decoupled/
-    ├── config.pbtxt
-    └── 1/
-        └── model.py
-```
-
-### config.pbtxt Example
+### config.pbtxt
 
 ```protobuf
 name: "llm_decoupled"
 backend: "python"
 max_batch_size: 0
-
-input [
-  {
-    name: "text_input"
-    data_type: TYPE_STRING
-    dims: [ 1 ]
-  },
-  {
-    name: "parameters"
-    data_type: TYPE_STRING
-    dims: [ 1 ]
-    optional: true
-  }
-]
-
-output [
-  {
-    name: "text_output"
-    data_type: TYPE_STRING
-    dims: [ 1 ]
-  }
-]
-
-instance_group [
-  {
-    kind: KIND_CPU
-    count: 1
-  }
-]
-
-model_transaction_policy {
-  decoupled: True
-}
+model_transaction_policy { decoupled: true }
+input  [ { name: "text_input"  data_type: TYPE_STRING dims: [ 1 ] } ]
+output [ { name: "text_output" data_type: TYPE_STRING dims: [ 1 ] } ]
+instance_group [ { kind: KIND_GPU count: 1 } ]
 ```
 
-**Key Configuration Points:**
+- `decoupled: true` — lets one request produce many responses (streaming).
+- `max_batch_size: 0` with `dims: [ 1 ]` — the input arrives with shape `(1,)`,
+  so index it with `[0]`.
+- There is **no** `parameters` input: request parameters are not tensors.
 
-- `backend: "python"` - Use Python backend for custom LLM integration
-- `max_batch_size: 0` - Disable batching (handle one request at a time)
-- `decoupled: True` - Enable streaming responses (0..N responses per request)
-- `text_input` - Accepts message array as string
-- `parameters` - Optional streaming/generation options
-- `text_output` - Returns streaming response chunks
+### model.py essentials
 
-### Python Backend Implementation
-
-Your `model.py` should:
-
-1. Accept `text_input` and `parameters`
-2. Parse JSON messages
-3. Call your LLM (vLLM, OpenAI, etc.)
-4. Stream responses as JSON chunks
-5. Send completion signal
-
-**Basic Structure:**
+A decoupled Python model must answer through each request's **response sender**
+and return `None` from `execute()`; returning a list of responses only works for
+non-decoupled models.
 
 ```python
-import json
-import triton_python_backend_utils as pb_utils
-
-class TritonPythonModel:
-    def execute(self, requests):
-        responses = []
-        for request in requests:
-            # Parse input
-            text_input = pb_utils.get_input_tensor_by_name(
-                request, "text_input"
-            ).as_numpy()[0][0].decode('utf-8')
-
-            messages = json.loads(text_input)
-
-            # Stream LLM responses
-            for token in your_llm_stream(messages):
-                chunk = {"type": "chunk", "content": token}
-                output_tensor = pb_utils.Tensor(
-                    "text_output",
-                    np.array([[json.dumps(chunk).encode('utf-8')]], dtype=np.object_)
-                )
-                response = pb_utils.InferenceResponse([output_tensor])
-                responses.append(response)
-
-            # Send completion
-            complete = {"type": "complete"}
-            output_tensor = pb_utils.Tensor(
-                "text_output",
-                np.array([[json.dumps(complete).encode('utf-8')]], dtype=np.object_)
-            )
-            responses.append(pb_utils.InferenceResponse([output_tensor]))
-
-        return responses
+def execute(self, requests):
+    for request in requests:
+        sender = request.get_response_sender()
+        try:
+            raw = pb_utils.get_input_tensor_by_name(request, "text_input").as_numpy()[0]
+            messages = json.loads(raw.decode("utf-8"))
+            params = json.loads(request.parameters() or "{}")
+            for text in stream_tokens(messages, params):   # your LLM here
+                self._send(sender, {"type": "chunk", "content": text})
+            self._send(sender, {"type": "complete"})
+        except Exception as e:
+            self._send(sender, {"type": "error", "content": str(e)})
+        finally:
+            sender.send(flags=pb_utils.TRITONSERVER_RESPONSE_COMPLETE_FINAL)
+    return None
 ```
 
-## LLM Backend Integration
+The example implements `stream_tokens` with Hugging Face `transformers`
+(`apply_chat_template` + `TextIteratorStreamer` on a background thread) using
+`Qwen/Qwen2.5-Coder-7B-Instruct` in bf16, which fits a 24 GB GPU. Change
+`MODEL_ID` in `model.py` to use another model.
 
-### Option 1: vLLM
+## Running it
 
-```python
-from vllm import LLM, SamplingParams
+The stock `nvcr.io/nvidia/tritonserver:<yy.mm>-py3` image has the Python
+backend but **not** PyTorch or Transformers. Build a small image on top:
 
-llm = LLM(model="meta-llama/Llama-3-8B-Instruct")
-
-def stream_generate(messages):
-    # Convert to vLLM format and stream
-    for output in llm.generate(prompt, sampling_params, use_tqdm=False):
-        yield output.outputs[0].text
+```dockerfile
+FROM nvcr.io/nvidia/tritonserver:24.08-py3
+RUN pip install --no-cache-dir torch transformers accelerate
 ```
 
-### Option 2: OpenAI API
-
-```python
-from openai import OpenAI
-
-client = OpenAI(api_key="...")
-
-def stream_generate(messages):
-    stream = client.chat.completions.create(
-        model="gpt-4",
-        messages=messages,
-        stream=True
-    )
-    for chunk in stream:
-        if chunk.choices[0].delta.content:
-            yield chunk.choices[0].delta.content
+```bash
+docker build -t triton-llm .
+docker run --rm --gpus all -p 8000:8000 \
+  -v $PWD/examples/triton:/models \
+  -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+  triton-llm tritonserver --model-repository=/models
 ```
 
-### Option 3: Transformers
+Pick a Triton tag that matches your NVIDIA driver (see the
+[framework support matrix](https://docs.nvidia.com/deeplearning/frameworks/support-matrix/)).
 
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
+## Configuring Kubrick
 
-model = AutoModelForCausalLM.from_pretrained("...")
-tokenizer = AutoTokenizer.from_pretrained("...")
-
-def stream_generate(messages):
-    # Implement streaming with TextIteratorStreamer
-    pass
-```
-
-## Health Check Endpoint
-
-Kubrick CLI checks server health at startup using:
-
-```
-GET /v2/health/live
-```
-
-Ensure this endpoint returns HTTP 200 when Triton is running.
-
-## Configuration in Kubrick
-
-### Method 1: Config File
-
+Run `kubrick` and choose **NVIDIA Triton** in the setup wizard, or edit
 `~/.kubrick/config.json`:
 
 ```json
 {
+  "provider": "triton",
   "triton_url": "localhost:8000",
-  "model_name": "llm_decoupled"
+  "triton_model": "llm_decoupled"
 }
 ```
 
-### Method 2: Environment Variables
+Environment variables override the config file:
 
 ```bash
-export TRITON_URL=localhost:8000
-export TRITON_MODEL_NAME=llm_decoupled
+export KUBRICK_TRITON_URL=gpu-box:8000
+export KUBRICK_TRITON_MODEL=llm_decoupled
+kubrick --provider triton
 ```
 
-### Method 3: Command Line
+`triton_url` accepts `host:port` (HTTP) or a full `http://` / `https://` URL.
+
+Set the context window to match your model so Kubrick trims history in time,
+e.g. `/config context_window 32768`.
+
+## Testing your server
 
 ```bash
-kubrick --triton-url localhost:8000 --model-name llm_decoupled
-```
+# Health
+curl -i http://localhost:8000/v2/health/live
 
-## Testing Your Triton Setup
-
-### 1. Check Server Health
-
-```bash
-curl http://localhost:8000/v2/health/live
-```
-
-Expected: HTTP 200
-
-### 2. Test Streaming Endpoint
-
-```bash
-curl -X POST http://localhost:8000/v2/models/llm_decoupled/generate_stream \
+# Streaming
+curl -N -X POST http://localhost:8000/v2/models/llm_decoupled/generate_stream \
   -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{
-    "text_input": "[{\"role\":\"user\",\"content\":\"Say hello\"}]",
-    "parameters": {"streaming": true}
-  }'
+  -d '{"text_input": "[{\"role\":\"user\",\"content\":\"Say hello\"}]", "parameters": {"streaming": true}}'
 ```
 
-Expected: SSE stream with JSON chunks
+You should see a series of `data: {...}` lines ending with a `complete` chunk.
 
-### 3. Test with Kubrick
+Kubrick's own Triton tests are mocked and need no server:
 
 ```bash
-# Run Kubrick test suite
-pytest tests/test_triton.py
-
-# Or run Kubrick CLI
-kubrick
-You: Say hello in one word
+pytest tests/test_triton_client_unit.py tests/test_triton_provider.py
 ```
 
 ## Troubleshooting
 
-### Connection Refused
+**Connection refused** — check `curl http://<host>:8000/v2/health/live`, that
+the port is published (`-p 8000:8000`), and firewall rules.
 
-**Problem:** Cannot connect to Triton server
+**Model not found / failed to load** — check the Triton startup log. Common
+causes: `torch`/`transformers` missing from the image, wrong directory layout
+(`<repo>/llm_decoupled/config.pbtxt` and `<repo>/llm_decoupled/1/model.py`), or
+out of GPU memory.
 
-**Solutions:**
+**Request hangs or returns nothing** — the model must be `decoupled: true`,
+use `request.get_response_sender()`, and always finish with
+`TRITONSERVER_RESPONSE_COMPLETE_FINAL` (put it in a `finally`).
 
-- Check Triton is running: `curl http://localhost:8000/v2/health/live`
-- Verify port 8000 is open: `netstat -tuln | grep 8000`
-- Check firewall settings
+**`unexpected inference input 'parameters'`** — remove the `parameters`
+input from `config.pbtxt`; read `request.parameters()` instead.
 
-### Model Not Found
+**The model talks about tools instead of calling them** — smaller models
+sometimes ignore the `tool_call` format. Use a stronger instruction-tuned
+coding model, or serve it through an OpenAI-compatible server (vLLM, Ollama)
+to get native tool calling.
 
-**Problem:** `Model llm_decoupled not found`
+## Performance notes
 
-**Solutions:**
+- One `instance_group` instance handles one request at a time with the example
+  model. For concurrent users, raise `count` (memory permitting) or put vLLM
+  behind the model instead of `transformers`.
+- Pin a GPU with `instance_group [ { kind: KIND_GPU count: 1 gpus: [ 0 ] } ]`.
 
-- Verify model is in repository: `ls /path/to/model_repository/llm_decoupled`
-- Check Triton logs for loading errors
-- Ensure `config.pbtxt` is valid
+## Resources
 
-### Streaming Not Working
-
-**Problem:** No streaming responses or timeout
-
-**Solutions:**
-
-- Ensure `decoupled: True` in config.pbtxt
-- Check SSE headers: `Accept: text/event-stream`
-- Verify Python backend streams responses incrementally
-- Check Triton logs for errors
-
-### Invalid Response Format
-
-**Problem:** Kubrick can't parse responses
-
-**Solutions:**
-
-- Ensure responses are JSON: `{"type": "chunk", "content": "..."}`
-- Include `type` field in all responses
-- Send `{"type": "complete"}` to end stream
-- Check for proper JSON encoding (use `json.dumps()`)
-
-## Performance Tuning
-
-### GPU Configuration
-
-For GPU-accelerated models:
-
-```protobuf
-instance_group [
-  {
-    kind: KIND_GPU
-    count: 1
-    gpus: [ 0 ]
-  }
-]
-```
-
-### Concurrent Requests
-
-Adjust instance count for parallel processing:
-
-```protobuf
-instance_group [
-  {
-    count: 4  # Run 4 parallel instances
-  }
-]
-```
-
-### Model Warmup
-
-Pre-load model at startup to reduce first-request latency.
-
-## Example Implementations
-
-See the `/triton/repository/llm_decoupled/` directory in the Kubrick repository for a complete working example with vLLM integration.
-
-## Additional Resources
-
-- [Triton Inference Server Documentation](https://docs.nvidia.com/deeplearning/triton-inference-server/)
-- [Python Backend Guide](https://github.com/triton-inference-server/python_backend)
-- [Decoupled Models](https://github.com/triton-inference-server/server/blob/main/docs/user_guide/decoupled_models.md)
-- [vLLM Integration](https://github.com/vllm-project/vllm)
-
-## Support
-
-For Triton-specific issues:
-
-- [Triton GitHub Issues](https://github.com/triton-inference-server/server/issues)
-- [Triton Forums](https://forums.developer.nvidia.com/c/ai/triton-inference-server/)
-
-For Kubrick integration issues:
-
-- [Kubrick GitHub Issues](https://github.com/yourusername/kubrick/issues)
-- See [WIKI.md](WIKI.md) for general troubleshooting
+- [Triton Inference Server docs](https://docs.nvidia.com/deeplearning/triton-inference-server/)
+- [Python backend](https://github.com/triton-inference-server/python_backend)
+- [Decoupled models](https://github.com/triton-inference-server/server/blob/main/docs/user_guide/decoupled_models.md)
+- [Generate extension](https://github.com/triton-inference-server/server/blob/main/docs/protocol/extension_generate.md)
+- Kubrick issues: <https://github.com/rcland12/kubrick-cli/issues>

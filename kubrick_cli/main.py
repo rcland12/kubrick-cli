@@ -2,1872 +2,982 @@
 """Main CLI entry point for Kubrick."""
 
 import argparse
+import io
 import json
-import re
+import os
+import select
+import stat
+import sys
 from datetime import datetime
+from typing import List, Optional, Tuple
 
 from rich.console import Console
-from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
-from rich.prompt import Prompt
 from rich.table import Table
 
-from .agent_loop import AgentLoop
-from .classifier import TaskClassifier
+from . import __version__
+from .agent_loop import AgentLoop, TurnResult
 from .config import KubrickConfig
-from .display import DisplayManager
-from .evaluator import TaskEvaluator
-from .execution_strategy import ExecutionStrategy
-from .planning import PlanningPhase
-from .providers.factory import ProviderFactory
+from .context_manager import ContextManager
+from .display import Renderer, is_interactive
+from .glyphs import glyph
+from .permissions import MODE_DESCRIPTIONS, MODES, PermissionManager
+from .prompts import build_system_prompt
+from .providers.base import ProviderError
+from .providers.factory import MissingCredentialError, ProviderFactory
 from .safety import SafetyConfig, SafetyManager
-from .scheduler import ToolScheduler
-from .tools import ToolExecutor, get_tools_prompt
-from .ui import SessionStats, create_enhanced_prompt
+from .setup_wizard import (
+    SetupWizard,
+    auth_login,
+    auth_logout,
+    auth_status,
+    choose_provider,
+    prompt_secret,
+)
+from .tools import ToolExecutor, get_tool_specs
+from .ui import EnhancedPrompt, SessionStats, SlashCommand, make_permission_prompt
+from .widgets import Choice, ask_text
+from .widgets import select as pick
 
 console = Console()
 
+INIT_PROMPT = """Please analyze this codebase and create a KUBRICK.md file in the \
+working directory. It will be loaded into your context in future sessions, so write it \
+for an AI coding agent working in this repo. Include:
+1. Commands to build, lint, run tests, and run a single test.
+2. A concise architecture overview: the big-picture structure that takes reading \
+several files to understand, not a file listing.
+3. Conventions and gotchas specific to this project.
+If a CLAUDE.md, AGENTS.md, README, or contributing guide exists, use it. Don't invent \
+information you can't verify from the repo, and keep it concise. If KUBRICK.md already \
+exists, suggest improvements to it instead."""
+
+COMMANDS = [
+    SlashCommand("/help", "Show commands and keys"),
+    SlashCommand("/clear", "Start a new conversation"),
+    SlashCommand("/compact", "Summarize the conversation to free context", "[focus]"),
+    SlashCommand("/context", "Show context window usage"),
+    SlashCommand("/model", "Pick or switch the model", "[name]"),
+    SlashCommand("/provider", "Pick or switch the provider", "[name]"),
+    SlashCommand("/setup", "Set up a provider (API key, server, model)"),
+    SlashCommand("/login", "Enter new credentials for the current provider"),
+    SlashCommand("/plan", "Toggle plan mode (read-only investigation)"),
+    SlashCommand("/permissions", "Pick the permission mode", "[mode]"),
+    SlashCommand("/init", "Generate a KUBRICK.md for this project"),
+    SlashCommand("/status", "Session, provider, and token usage"),
+    SlashCommand("/save", "Save the conversation"),
+    SlashCommand("/list", "List saved conversations", "[N]"),
+    SlashCommand("/load", "Resume a saved conversation", "<#|id>", needs_arg=True),
+    SlashCommand("/delete", "Delete a saved conversation", "<id>", needs_arg=True),
+    SlashCommand("/config", "Show or change settings", "[key [value]]"),
+    SlashCommand("/update", "Check for a new Kubrick release and install it"),
+    SlashCommand(
+        "/debug", "Show the system prompt or recent messages", "<prompt|messages>", True
+    ),
+    SlashCommand("/exit", "Save and quit"),
+]
+
+
+def help_text() -> str:
+    """The /help screen."""
+    width = max(len(f"{c.name} {c.args}") for c in COMMANDS) + 2
+    rows = "\n".join(
+        f"  [green]{escape(f'{c.name} {c.args}'.strip().ljust(width))}[/green]"
+        f"{escape(c.description)}"
+        for c in COMMANDS
+    )
+    dot = glyph("dot")
+    return (
+        f"[bold cyan]Commands[/bold cyan]\n{rows}\n\n"
+        f"[bold cyan]Keys[/bold cyan]\n"
+        f"  Enter submits {dot} Alt+Enter or Ctrl+J adds a newline\n"
+        f"  Type / for the command menu: {glyph('up_down')} to pick, Tab to complete, "
+        "Esc to close\n"
+        f"  Ctrl+C interrupts the agent {dot} Ctrl+D quits\n\n"
+        "[bold cyan]Project instructions[/bold cyan]  KUBRICK.md (or CLAUDE.md / "
+        "AGENTS.md) in the project, and ~/.kubrick/KUBRICK.md, are loaded into the "
+        "system prompt."
+    )
+
 
 class KubrickCLI:
-    """Main CLI application."""
+    """One Kubrick session: provider, tools, conversation, and the agent loop."""
 
     def __init__(
         self,
         config: KubrickConfig,
-        working_dir: str = None,
-        conversation_id: str = None,
-        provider_override: str = None,
+        working_dir: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        print_mode: bool = False,
+        interactive: bool = True,
     ):
         """
-        Initialize Kubrick CLI.
-
         Args:
-            config: KubrickConfig instance
-            working_dir: Working directory for file operations (overrides config)
-            conversation_id: Load existing conversation by ID
-            provider_override: Override configured provider (for testing)
+            config: KubrickConfig (session overrides already applied)
+            working_dir: Directory the agent works in (default: cwd)
+            conversation_id: Resume a saved conversation (ID or path)
+            print_mode: Non-interactive single-prompt mode (``-p``)
+            interactive: Whether a human can answer prompts
         """
         self.config = config
-
-        if provider_override:
-            config.set("provider", provider_override)
-
-        try:
-            self.provider = ProviderFactory.create_provider(config.get_all())
-            console.print(
-                f"[dim]→ Using {self.provider.provider_name} provider "
-                f"with model {self.provider.model_name}[/dim]"
-            )
-        except ValueError as e:
-            console.print(f"[red]Error: {e}[/red]")
-            console.print(
-                "[yellow]Please run the setup wizard or check your configuration.[/yellow]"
-            )
-            raise
-
-        self.client = self.provider
-
-        self.safety_manager = SafetyManager(
-            SafetyConfig.from_config(config.get_all()),
-            kubrick_config=config,
+        self.interactive = interactive
+        self.renderer = Renderer(
             working_dir=working_dir,
+            show_thinking=bool(config.get("show_thinking", True)),
+            print_mode=print_mode,
         )
-
+        self.safety_manager = SafetyManager(SafetyConfig.from_config(config.get_all()))
         self.tool_executor = ToolExecutor(
-            working_dir=working_dir, safety_manager=self.safety_manager
+            working_dir=working_dir,
+            safety_manager=self.safety_manager,
+            bash_timeout=int(config.get("tool_timeout_seconds") or 120),
         )
-
-        self.display_manager = DisplayManager(config.get_all())
-
-        enable_parallel = config.get("enable_parallel_tools", True)
-        max_workers = config.get("max_parallel_workers", 3)
-        self.tool_scheduler = ToolScheduler(
-            tool_executor=self.tool_executor,
-            max_workers=max_workers,
-            enable_parallel=enable_parallel,
-        )
-
-        max_iterations = config.get("max_iterations", 15)
-        max_tools_per_turn = config.get("max_tools_per_turn", 5)
-        timeout_seconds = config.get("total_timeout_seconds", 600)
-
-        # Initialize context manager if enabled
-        self.context_manager = None
-        if config.get("enable_context_management", True):
-            from .context_manager import ContextManager
-
-            self.context_manager = ContextManager(
-                provider_name=self.provider.provider_name,
-                model_name=self.provider.model_name,
-                config=config.get_all(),
-                llm_client=self.provider,  # Pass LLM client for summarization
-            )
-            reserved_output = config.get("max_output_tokens", 2048)
-            available = self.context_manager.context_window - reserved_output
-            console.print(
-                f"[dim]→ Context management enabled "
-                f"(limit: {self.context_manager.context_window} tokens, "
-                f"available: {available} tokens)[/dim]"
-            )
-
-        # Initialize task evaluator if enabled
-        self.task_evaluator = None
-        if self.config.get("enable_task_evaluator", True):
-            evaluator_model = self.config.get("evaluator_model")
-            self.task_evaluator = TaskEvaluator(
-                llm_client=self.provider,
-                provider_name=self.provider.provider_name,
-                fast_model=evaluator_model,
-                enabled=True,
-            )
-            console.print(
-                "[dim]→ Task evaluator enabled (intelligent completion detection)[/dim]"
-            )
-
-        # Initialize session statistics (needed by AgentLoop)
         self.session_stats = SessionStats()
-
-        # Check if clean display is enabled
-        clean_display_enabled = self.config.get("clean_display", True)
-        if clean_display_enabled:
-            console.print(
-                "[dim]→ Clean display mode enabled (animations, suppressed JSON)[/dim]"
-            )
-
-        self.agent_loop = AgentLoop(
-            llm_client=self.provider,
-            tool_executor=self.tool_executor,
-            max_iterations=max_iterations,
-            max_tools_per_turn=max_tools_per_turn,
-            timeout_seconds=timeout_seconds,
-            stream_options={},
-            display_manager=self.display_manager,
-            tool_scheduler=self.tool_scheduler,
-            context_manager=self.context_manager,
-            task_evaluator=self.task_evaluator,
-            clean_display=clean_display_enabled,
-            session_stats=self.session_stats,
+        self.permissions = PermissionManager(
+            config.get("permission_mode", "default"),
+            self.tool_executor,
+            self.safety_manager,
+            prompt=make_permission_prompt(self.renderer) if interactive else None,
         )
+        self.provider = None
+        self._model_cache: Optional[List[str]] = None
+        self._connect(config.get("provider"))
 
-        self.classifier = TaskClassifier(self.provider)
-        self.planning_phase = PlanningPhase(
-            llm_client=self.provider,
-            tool_executor=self.tool_executor,
-            agent_loop=self.agent_loop,
-        )
-
-        self.interrupt_count = 0
-
-        self.last_listed_conversations = []
-
-        self.conversation_id = conversation_id or datetime.now().strftime(
-            "%Y%m%d_%H%M%S"
-        )
-
-        # Enhanced prompt will be created after conversation_id is set
-        self.enhanced_prompt = None
-
-        # Wrap tool executor to track statistics
-        self._original_tool_execute = self.tool_executor.execute
-        self.tool_executor.execute = self._tracked_tool_execute
-
+        self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.messages = [self._system_message()]
+        self.last_listed_conversations: List[dict] = []
         if conversation_id:
-            loaded = self._load_conversation(conversation_id)
-            if loaded:
-                self.messages = loaded
-            else:
-                console.print(
-                    f"[yellow]Conversation {conversation_id} not found, "
-                    "starting new conversation[/yellow]"
-                )
-                self.messages = self._get_initial_messages()
-        else:
-            self.messages = self._get_initial_messages()
-
-    def _get_initial_messages(self) -> list:
-        """Get initial system prompt messages."""
-        return [
-            {
-                "role": "system",
-                "content": f"""You are Kubrick, a professional AI coding assistant with agentic \
-capabilities and file system access. \
-You write production-quality code following industry best practices.
-
-Current working directory: {self.tool_executor.working_dir}
-
-# Core Principles
-
-You are a PROFESSIONAL software engineer. Every piece of code you write should be:
-- Production-ready and robust
-- Well-documented with clear docstrings
-- Type-hinted for clarity and IDE support
-- Error-handled appropriately
-- Following language-specific best practices
-- Clean, readable, and maintainable
-
-# Code Quality Standards
-
-## Python Code Requirements
-1. **Type Hints**: Use type hints for all function parameters and return values
-2. **Docstrings**: Write clear docstrings (Google style) for all classes and functions
-3. **Error Handling**: Use try-except blocks where appropriate, with specific exception types
-4. **Logging**: Use proper logging instead of print statements for production code
-5. **Structure**: Follow PEP 8 style guide
-6. **Validation**: Validate inputs and handle edge cases
-7. **Modern Python**: Use modern Python features (f-strings, dataclasses, etc.)
-
-## Code Organization
-- Group related functionality logically
-- Use meaningful variable and function names
-- Keep functions focused (single responsibility)
-- Add comments for complex logic
-- Use constants for magic numbers/strings
-
-## Example of GOOD Code:
-```python
-from typing import List, Optional
-import logging
-
-logger = logging.getLogger(__name__)
-
-class DataProcessor:
-    \"\"\"Processes and validates input data.
-
-    This class handles data transformation and validation
-    with comprehensive error handling.
-
-    Attributes:
-        max_size: Maximum allowed data size
-        strict_mode: Whether to raise on validation errors
-    \"\"\"
-
-    def __init__(self, max_size: int = 1000, strict_mode: bool = True):
-        \"\"\"Initialize the processor.
-
-        Args:
-            max_size: Maximum number of items to process
-            strict_mode: If True, raise exceptions on validation errors
-        \"\"\"
-        self.max_size = max_size
-        self.strict_mode = strict_mode
-        logger.info(f"Initialized DataProcessor (max_size={{max_size}})")
-
-    def process_items(self, items: List[str]) -> List[str]:
-        \"\"\"Process a list of items with validation.
-
-        Args:
-            items: List of strings to process
-
-        Returns:
-            List of processed items
-
-        Raises:
-            ValueError: If items exceed max_size in strict mode
-        \"\"\"
-        if len(items) > self.max_size:
-            msg = f"Items ({{len(items)}}) exceeds max_size ({{self.max_size}})"
-            if self.strict_mode:
-                raise ValueError(msg)
-            logger.warning(msg)
-            items = items[:self.max_size]
-
-        processed = []
-        for item in items:
-            try:
-                processed.append(self._process_single(item))
-            except Exception as e:
-                logger.error(f"Failed to process item: {{e}}")
-                if self.strict_mode:
-                    raise
-
-        return processed
-
-    def _process_single(self, item: str) -> str:
-        \"\"\"Process a single item.\"\"\"
-        return item.strip().lower()
-```
-
-## Example of BAD Code (DO NOT WRITE THIS):
-```python
-# Missing docstrings, no type hints, no error handling
-class Processor:
-    def __init__(self, size):
-        self.size = size
-
-    def process(self, items):
-        result = []
-        for i in items:
-            result.append(i.strip().lower())
-        return result
-```
-
-# When Writing Code
-
-## For Scripts and Utilities
-- Always add `if __name__ == "__main__":` guard
-- Use argparse for command-line arguments
-- Add proper error handling and exit codes
-- Include usage examples in docstrings
-
-## For Libraries and Modules
-- Design clear, intuitive APIs
-- Raise specific exceptions (ValueError, TypeError, etc.)
-- Validate inputs at API boundaries
-- Write defensive code that handles edge cases
-
-## For Classes
-- Use properties for computed attributes
-- Implement `__repr__` and `__str__` for debugging
-- Consider using dataclasses for simple data containers
-- Follow SOLID principles
-
-## Error Handling Best Practices
-```python
-# DO THIS - Specific exceptions with context
-try:
-    result = process_data(user_input)
-except ValueError as e:
-    logger.error(f"Invalid input: {{e}}")
-    raise
-except ConnectionError as e:
-    logger.error(f"Connection failed: {{e}}")
-    return None
-
-# NOT THIS - Bare except that hides errors
-try:
-    result = process_data(user_input)
-except:
-    pass
-```
-
-## Professional Touches
-1. **Configuration over hardcoding**: Use constants or config files
-2. **Logging levels**: DEBUG for details, INFO for progress, ERROR for problems
-3. **Resource cleanup**: Use context managers (with statements)
-4. **Path handling**: Use pathlib.Path instead of string concatenation
-5. **Testing mindset**: Write code that's easy to test
-
-## Code Review Checklist (Apply to Your Own Code!)
-- [ ] All functions have type hints
-- [ ] All public functions have docstrings
-- [ ] Error cases are handled appropriately
-- [ ] No hardcoded values (use constants)
-- [ ] Variable names are descriptive
-- [ ] Complex logic has explanatory comments
-- [ ] No bare except clauses
-- [ ] Resources are properly cleaned up
-- [ ] Code follows PEP 8
-
-Remember: You're not writing quick scripts - you're writing production code that \
-other engineers will read, maintain, and extend. Make them proud!
-
-## Docker & DevOps Best Practices
-
-When creating Dockerfiles, docker-compose files, or CI/CD configurations:
-
-### Dockerfile Best Practices
-1. **Use specific base image tags** - Not `python:3`, use `python:3.11-slim` or `python:3.11-alpine`
-2. **Multi-stage builds** - Separate build and runtime stages for smaller images
-3. **Layer optimization** - Order commands from least to most frequently changing
-4. **Security**:
-   - Run as non-root user
-   - Scan for vulnerabilities
-   - Use official base images
-5. **Build cache** - Copy requirements first, then code
-6. **.dockerignore** - Exclude unnecessary files
-7. **Health checks** - Include HEALTHCHECK instruction
-8. **Environment variables** - Use ARG for build-time, ENV for runtime
-
-### Example Production Dockerfile:
-```dockerfile
-# Multi-stage build for Python application
-FROM python:3.11-slim as builder
-
-WORKDIR /app
-
-# Install dependencies first (better caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
-
-# Runtime stage
-FROM python:3.11-slim
-
-# Create non-root user
-RUN useradd -m -u 1000 appuser
-
-WORKDIR /app
-
-# Copy only necessary files from builder
-COPY --from=builder /root/.local /home/appuser/.local
-COPY --chown=appuser:appuser . .
-
-# Make sure scripts are in PATH
-ENV PATH=/home/appuser/.local/bin:$PATH
-
-# Switch to non-root user
-USER appuser
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD python -c "import requests; requests.get('http://localhost:8000/health')" || exit 1
-
-CMD ["python", "app.py"]
-```
-
-### Docker Compose Best Practices
-1. **Use version 3.8+** for modern features
-2. **Named volumes** for persistence (not bind mounts for data)
-3. **Networks** - Create custom networks for service isolation
-4. **Environment files** - Use `.env` files, never hardcode secrets
-5. **Health checks** - Ensure services are actually ready
-6. **Resource limits** - Set memory/CPU limits for production
-7. **Restart policies** - Use `unless-stopped` for services
-8. **Dependency order** - Use `depends_on` with `condition: service_healthy`
-
-### Example Production docker-compose.yml:
-```yaml
-version: '3.8'
-
-services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://user:pass@db:5432/mydb
-      - REDIS_URL=redis://redis:6379
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    volumes:
-      - app-logs:/app/logs
-    networks:
-      - backend
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-
-  db:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_DB=mydb
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=pass
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - backend
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis-data:/data
-    networks:
-      - backend
-
-volumes:
-  app-logs:
-  postgres-data:
-  redis-data:
-
-networks:
-  backend:
-    driver: bridge
-```
-
-## Self-Verification - CHECK YOUR WORK!
-
-After EVERY significant operation, verify your work:
-
-### After Creating Files
-```tool_call
-{{
-  "tool": "list_files",
-  "parameters": {{
-    "pattern": "filename.py"
-  }}
-}}
-```
-**OR** read it back to confirm contents
-
-### After Editing Files
-```tool_call
-{{
-  "tool": "read_file",
-  "parameters": {{
-    "file_path": "filename.py"
-  }}
-}}
-```
-Confirm the edit was applied correctly
-
-### After Writing Python Code
-```tool_call
-{{
-  "tool": "run_bash",
-  "parameters": {{
-    "command": "python -m py_compile filename.py"
-  }}
-}}
-```
-Check for syntax errors
-
-### After Creating Docker Files
-```tool_call
-{{
-  "tool": "run_bash",
-  "parameters": {{
-    "command": "docker build -t test-image ."
-  }}
-}}
-```
-Verify the Dockerfile builds successfully
-
-### Before Completing Complex Tasks
-Ask yourself:
-1. Did I read files before editing them?
-2. Did I verify my changes were applied?
-3. Did I test the code I wrote?
-4. Did I follow best practices?
-5. Would this code pass code review?
-
-**ALWAYS** verify your work - don't assume it worked!
-
-## Docker-Specific Best Practices
-
-### Python Projects - Dependency Installation
-**CRITICAL**: Python projects can use different dependency management:
-
-1. **Check what the project uses FIRST**:
-   ```tool_call
-   {{
-     "tool": "list_files",
-     "parameters": {{
-       "pattern": "*.toml"
-     }}
-   }}
-   ```
-   OR check specific files:
-   ```tool_call
-   {{
-     "tool": "list_files",
-     "parameters": {{
-       "pattern": "pyproject.toml"
-     }}
-   }}
-   ```
-
-   **IMPORTANT**: Do NOT use brace expansion like `{{file1,file2,file3}}` - \
-that's bash syntax, not glob syntax.
-   Use wildcards (`*.txt`, `*.toml`) or check files individually.
-
-2. **Use the correct installation method**:
-   - **pyproject.toml**: `RUN pip install .` or `RUN pip install -e .`
-   - **requirements.txt**: `RUN pip install -r requirements.txt`
-   - **setup.py**: `RUN pip install .`
-   - **Pipfile**: `RUN pipenv install --system`
-
-3. **Example for pyproject.toml projects**:
-   ```dockerfile
-   # Copy dependency files first (better caching)
-   COPY pyproject.toml setup.py* ./
-   RUN pip install --no-cache-dir .
-
-   # Then copy the rest
-   COPY . .
-   ```
-
-**DON'T**:
-❌ Assume requirements.txt exists without checking
-❌ Use `pip install -r requirements.txt` for pyproject.toml projects
-
-**DO**:
-✅ Check which dependency files exist before writing Dockerfile
-✅ Use the appropriate installation command for the project type
-
-## Critical: Professional Behavior
-
-1. **NEVER APOLOGIZE UNNECESSARILY** - Don't say "I'm sorry" or "I apologize" \
-after plan approval or when continuing work. Just execute.
-   - ❌ "I apologize for the confusion, let me create the file now"
-   - ✅ "I'll create the file now" (or just do it without announcing)
-
-2. **DON'T RESTATE THE PLAN** - After a plan is approved, IMMEDIATELY start executing. \
-Don't summarize what you're about to do.
-   - ❌ "Sure, here's the plan: 1. Create file, 2. Add content..." (after plan already approved!)
-   - ✅ [Immediately call write_file tool]
-
-3. **EXECUTE IMMEDIATELY AFTER PLAN APPROVAL** - No preamble, no restatement, no apologies. \
-Just ACT.
-
-4. **DON'T ASK OBVIOUS QUESTIONS** - If a file doesn't exist and you need to create it, \
-just create it. Don't ask permission.
-   - ❌ "The file doesn't exist. Would you like me to create it?"
-   - ✅ "I'll create the file" [then create it]
-
-5. **TRUST TOOL SUCCESS MESSAGES** - When a tool reports "✓ succeeded", it succeeded. \
-Don't doubt it.
-   - ❌ "It seems like the file was not created successfully" (when tool said ✓ succeeded)
-   - ✅ "File created successfully" OR just move to the next step
-   - If you're truly uncertain, read the file back to verify - but trust the success message first
-
-6. **VERIFY YOUR WORK** - Check that your changes were applied correctly \
-before moving to the next step.
-   - But if the tool says ✓ succeeded, you can trust it and move forward
-
-# Agentic Behavior - SEQUENTIAL EXECUTION
-
-You work in an **iterative observe-act loop**. This means:
-
-1. **Call 1-2 tools** to gather information or make ONE change
-2. **OBSERVE the results** - See what happened before deciding next action
-3. **DECIDE next action** based on what you learned
-4. **Repeat** until task is complete
-
-## The Observe-Act Loop
-
-**DON'T** try to do everything in one response:
-❌ list_files + read_file + read_file + write_file + verify (5 tools at once)
-Why? You can't see the list_files results before deciding which files to read!
-
-**DO** work sequentially, one logical step at a time:
-✅ Iteration 1: list_files → SEE which files exist
-✅ Iteration 2: read_file pyproject.toml → SEE how dependencies are installed
-✅ Iteration 3: read_file docker-compose.yml → SEE current structure
-✅ Iteration 4: write_file Dockerfile.test → SEE if it succeeds
-✅ Iteration 5: read_file Dockerfile.test → SEE what was written, verify correctness
-✅ Iteration 6: edit_file (if needed) → FIX any issues
-✅ Iteration 7: run_bash docker build → SEE if it builds
-
-**This is slower but MUCH more reliable**. You have 25 iterations - use them wisely.
-
-## Key Principles
-
-1. **One logical action per response** - Gather info OR make change, not both
-2. **Wait for tool results** - NEVER make up or guess what tool results will be
-3. **Observe before deciding** - See actual results before planning next action
-4. **Verify before moving on** - Read back files you wrote/edited
-5. **React to results** - If something fails, you'll see it and can fix it
-6. **Trust the process** - Multiple iterations with feedback > batching blind actions
-
-## CRITICAL: Never Hallucinate Tool Results
-
-❌ **NEVER** do this:
-```
-Iteration 1: Call list_files
-Iteration 2: Return fake JSON like {{"files": ["..."]}} pretending to be results
-```
-
-✅ **ALWAYS** do this:
-```
-Iteration 1: Call list_files → WAIT for actual results
-Iteration 2: (System shows results) → Now you can proceed based on what you saw
-```
-
-If you call a tool, the system will execute it and show you the results.
-**DO NOT** try to provide results yourself - that causes errors!
-
-# Completion Signal - CRITICAL
-
-**You MUST say "TASK_COMPLETE" when you finish a task.** This prevents unnecessary repetition.
-
-**When to say TASK_COMPLETE:**
-- ✅ After answering a question fully
-- ✅ After creating/editing files as requested
-- ✅ After explaining a concept completely
-- ✅ After writing creative content (poems, stories, etc.)
-- ✅ When the user's request has been fulfilled
-- ✅ When you've verified your changes work correctly
-
-**Example responses:**
-- "Here's a poem about the Titanic: [poem] TASK_COMPLETE"
-- "I've created the file and verified it exists. TASK_COMPLETE"
-- "The bug is fixed and tests pass. TASK_COMPLETE"
-
-**DO NOT:**
-- ❌ Keep working after the task is done
-- ❌ Repeat the same action multiple times
-- ❌ Wait to say TASK_COMPLETE - say it immediately when done
-
-# Tool Call Format (EXACT SYNTAX REQUIRED)
-
-**CRITICAL**: You MUST **ALWAYS** wrap tool calls in ```tool_call markdown fences.
-
-**NEVER** output raw JSON like `{{"tool": "..."}}` without the fences.
-**ALWAYS** use the format below:
-
-```tool_call
-{{
-  "tool": "tool_name",
-  "parameters": {{
-    "param": "value"
-  }}
-}}
-```
-
-# Available Tools
-
-{get_tools_prompt()}
-
-# How to Explore Directories
-
-⚠️ IMPORTANT: `list_files` automatically excludes .git, node_modules, __pycache__, \
-and other common directories.
-
-Best practices:
-- ✅ Use SPECIFIC patterns: `src/**/*.py`, `*.js`, `tests/**/*.test.ts`
-- ❌ AVOID broad patterns: `**/*` (will hit 500 file limit)
-- ✅ Start narrow, then expand if needed
-
-The tool is limited to 500 files to prevent context overflow.
-
-Examples:
-```tool_call
-{{
-  "tool": "list_files",
-  "parameters": {{
-    "pattern": "src/**/*.py"
-  }}
-}}
-```
-
-```tool_call
-{{
-  "tool": "list_files",
-  "parameters": {{
-    "pattern": "*.js"
-  }}
-}}
-```
-
-# Important Rules
-
-1. **ACT, DON'T JUST PLAN**: When you say "Let's start", IMMEDIATELY call the tools. \
-Don't describe what you'll do - DO IT.
-2. **ITERATE**: Call tools immediately when needed, then analyze results and continue iterating
-3. **MULTIPLE TOOLS**: You can call multiple tools per response
-4. **READ BEFORE EDIT**: Always read a file before editing it
-5. **SIGNAL COMPLETION**: Say "TASK_COMPLETE" when the task is done
-6. **USE TOOLS IMMEDIATELY**: Don't ask permission - just call the tool
-7. **ALWAYS RUN CODE YOU WRITE**: After writing a Python script, \
-immediately execute it with run_bash
-8. **ALWAYS VERIFY FILE OPERATIONS**: After writing a file, read it back or list it to confirm
-9. **NEVER JUST DESCRIBE**: If you write code, RUN it. If you create a file, VERIFY it exists
-10. **NEVER SHOW CODE IN MARKDOWN INSTEAD OF WRITING**: If you display a Dockerfile or script \
-in a code block, you MUST also call write_file in that same response. Displaying ≠ Writing!
-
-## Critical: What NOT To Do
-
-❌ **DON'T** say "Let's start by creating X" without calling write_file
-✅ **DO** say "Let's start by creating X" AND include the write_file tool call in the SAME response
-
-❌ **DON'T** write a Python script and then just explain what it does
-✅ **DO** write the script AND run it immediately
-
-❌ **DON'T** say "The file has been created" without actually creating it
-✅ **DO** use write_file tool, then verify with read_file or list_files
-
-❌ **DON'T** ask the user "Should I run this?" after writing code
-✅ **DO** run it immediately - that's what they asked for
-
-❌ **DON'T** print file contents as output instead of writing them
-✅ **DO** use write_file tool to actually create the file
-
-❌ **DON'T** describe your plan and wait for the next iteration to execute
-✅ **DO** execute the plan immediately with tool calls
-
-## CRITICAL: Never Show Code Instead of Writing It
-
-This is the #1 most common mistake - showing code to the user instead of actually writing the file.
-
-❌ **WRONG - Displaying code without tool call:**
-```
-Assistant: Now I'll create the Dockerfile.
-
-```Dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY . .
-RUN pip install .
-```
-
-Let's create this Dockerfile.
-```
-
-**Problem**: Agent showed Dockerfile in markdown but never called write_file!
-
-✅ **CORRECT - Call write_file directly:**
-```
-Assistant: Now I'll create the Dockerfile.
-
-```tool_call
-{{
-  "tool": "write_file",
-  "parameters": {{
-    "file_path": "Dockerfile",
-    "content": "FROM python:3.11-slim\\nWORKDIR /app\\nCOPY . .\\nRUN pip install .\\n"
-  }}
-}}
-```
-```
-
-**Key point**: Showing code ≠ Writing code. Use write_file tool, not markdown blocks!
-
-# Examples
-
-## Example 1: Read a file (simple)
-User: "Read the config.pbtxt file"
-Assistant: I'll read that file for you.
-
-```tool_call
-{{
-  "tool": "read_file",
-  "parameters": {{
-    "file_path": "config.pbtxt"
-  }}
-}}
-```
-
-## Example 2: Write AND RUN code (critical!)
-User: "Create a Python script that prints the current date"
-Assistant: I'll create and run the script.
-
-```tool_call
-{{
-  "tool": "write_file",
-  "parameters": {{
-    "file_path": "print_date.py",
-    "content": "from datetime import datetime\\nprint(f'Current date: {{datetime.now()}}')\\n"
-  }}
-}}
-```
-
-```tool_call
-{{
-  "tool": "run_bash",
-  "parameters": {{
-    "command": "python print_date.py"
-  }}
-}}
-```
-
-[Shows both write AND execute - no asking permission!]
-
-## Example 3: Multi-step iteration
-User: "Read main.py and add logging to all functions"
-Assistant: I'll read the file first.
-
-```tool_call
-{{
-  "tool": "read_file",
-  "parameters": {{
-    "file_path": "main.py"
-  }}
-}}
-```
-
-[Tool returns main.py contents showing function foo()...]
-
-Assistant continues: Now I'll edit the file to add logging.
-
-```tool_call
-{{
-  "tool": "edit_file",
-  "parameters": {{
-    "file_path": "main.py",
-    "old_string": "def foo():\\n    return 42",
-    "new_string": "import logging\\n\\ndef foo():\\n    \
-logging.info('foo() called')\\n    return 42"
-  }}
-}}
-```
-
-TASK_COMPLETE: Added logging to all functions in main.py.
-
-## Example 4: Sequential Observe-Act Loop (BEST PRACTICE)
-
-User: "Create a Dockerfile.test for running pytest"
-
-❌ **WRONG - Batching without observing:**
-Assistant: I'll create the Dockerfile and verify it.
-
-```tool_call
-{{ "tool": "list_files", "parameters": {{ "pattern": "{{requirements.txt,pyproject.toml}}" }} }}
-```
-```tool_call
-{{ "tool": "read_file", "parameters": {{ "file_path": "pyproject.toml" }} }}
-```
-```tool_call
-{{ "tool": "write_file", "parameters": {{ "file_path": "Dockerfile.test", "content": "..." }} }}
-```
-```tool_call
-{{ "tool": "read_file", "parameters": {{ "file_path": "Dockerfile.test" }} }}
-```
-
-Problem: Agent calls write_file before seeing what's in pyproject.toml!
-
-✅ **CORRECT - Sequential with observation:**
-
-Iteration 1:
-```tool_call
-{{ "tool": "list_files", "parameters": {{ "pattern": "{{requirements.txt,pyproject.toml}}" }} }}
-```
-[Sees: pyproject.toml exists, requirements.txt doesn't]
-
-Iteration 2:
-```tool_call
-{{ "tool": "read_file", "parameters": {{ "file_path": "pyproject.toml" }} }}
-```
-[Sees: Uses setuptools, dependencies listed in pyproject.toml]
-
-Iteration 3:
-```tool_call
-{{
-  "tool": "write_file",
-  "parameters": {{
-    "file_path": "Dockerfile.test",
-    "content": "FROM python:3.11-slim\\n...\\nRUN pip install ."
-  }}
-}}
-```
-[Sees: ✓ write_file succeeded]
-
-Iteration 4:
-```tool_call
-{{ "tool": "read_file", "parameters": {{ "file_path": "Dockerfile.test" }} }}
-```
-[Sees content, verifies it's correct]
-
-Result: Perfect Dockerfile because agent observed results at each step!
-
-## Example 5: Write file and verify (important!)
-User: "Create a README.md file with project info"
-Assistant: I'll create the README and verify it was written.
-
-```tool_call
-{{
-  "tool": "write_file",
-  "parameters": {{
-    "file_path": "README.md",
-    "content": "# My Project\\n\\nThis is my awesome project.\\n"
-  }}
-}}
-```
-
-```tool_call
-{{
-  "tool": "list_files",
-  "parameters": {{
-    "pattern": "README.md"
-  }}
-}}
-```
-
-[Verifies file exists - proper workflow!]
-""",
-            }
-        ]
-
-    def _load_conversation(self, conversation_id: str) -> list:
-        """Load a conversation by ID."""
-        data = self.config.load_conversation(conversation_id)
-        if data:
-            return data.get("messages", [])
-        return None
-
-    def _tracked_tool_execute(self, tool_name: str, parameters: dict):
-        """Wrapper around tool execution to track statistics."""
-        result = self._original_tool_execute(tool_name, parameters)
-
-        # Track statistics based on tool type
-        if result.get("success"):
-            if tool_name == "write_file":
-                # We'll count all writes as creates for now (could be enhanced)
-                self.session_stats.files_created += 1
-
-                # Estimate lines added
-                content = parameters.get("content", "")
-                self.session_stats.lines_added += content.count("\n") + 1
-
-            elif tool_name == "edit_file":
-                self.session_stats.files_modified += 1
-
-                # Estimate line changes
-                old_string = parameters.get("old_string", "")
-                new_string = parameters.get("new_string", "")
-                old_lines = old_string.count("\n") + 1
-                new_lines = new_string.count("\n") + 1
-
-                if new_lines > old_lines:
-                    self.session_stats.lines_added += new_lines - old_lines
-                else:
-                    self.session_stats.lines_deleted += old_lines - new_lines
-
-            elif tool_name == "read_file":
-                self.session_stats.files_read += 1
-
-            elif tool_name == "run_bash":
-                self.session_stats.commands_executed += 1
-
-        return result
-
-    def _save_conversation(self):
-        """Save current conversation to disk."""
-        if self.config.get("auto_save_conversations", True):
-            metadata = {
-                "working_dir": str(self.tool_executor.working_dir),
-                "provider": self.provider.provider_name,
-                "model_name": self.provider.model_name,
-                "saved_at": datetime.now().isoformat(),
-            }
-            self.config.save_conversation(self.conversation_id, self.messages, metadata)
-
-    def parse_tool_calls(self, text: str) -> list:
-        """
-        Parse tool calls from LLM response with robust error handling.
-
-        Args:
-            text: Response text from LLM
-
-        Returns:
-            List of (tool_name, parameters) tuples
-        """
-        tool_calls = []
-
-        # Pattern 1: Standard ```tool_call format
-        pattern = r"```tool_call\s*\n(.*?)\n```"
-        matches = re.findall(pattern, text, re.DOTALL)
-
-        for match in matches:
-            try:
-                # Clean up common JSON formatting issues
-                cleaned = match.strip()
-                # Remove trailing commas before closing braces
-                cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
-
-                tool_data = json.loads(cleaned)
-                tool_name = tool_data.get("tool")
-                parameters = tool_data.get("parameters", {})
-                if tool_name:
-                    tool_calls.append((tool_name, parameters))
-            except json.JSONDecodeError as e:
-                console.print(f"[red]Failed to parse tool call JSON: {e}[/red]")
-                console.print(f"[dim]Content: {match[:100]}...[/dim]")
-                # Don't continue - skip this malformed tool call
-                continue
-            except Exception as e:
-                console.print(f"[red]Unexpected error parsing tool call: {e}[/red]")
-                continue
-
-        # Pattern 2: Fallback for JSON without markdown fences
-        if not tool_calls:
-            # Look for JSON objects that look like tool calls
-            json_pattern = (
-                r'\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*\{[^}]*\}\s*\}'
-            )
-            json_matches = re.findall(json_pattern, text, re.DOTALL)
-
-            if json_matches:
-                console.print(
-                    "[yellow]⚠ Warning: Detected tool call without proper markdown fence. "
-                    "Parsing anyway, but please use ```tool_call format.[/yellow]"
-                )
-
-                # More permissive pattern for nested JSON
-                full_json_pattern = (
-                    r'(\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{.*?\}\s*\})'
-                )
-                for match in re.finditer(full_json_pattern, text, re.DOTALL):
-                    try:
-                        cleaned = match.group(1).strip()
-                        # Clean up trailing commas
-                        cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
-
-                        tool_data = json.loads(cleaned)
-                        tool_name = tool_data.get("tool")
-                        parameters = tool_data.get("parameters", {})
-                        if tool_name:
-                            tool_calls.append((tool_name, parameters))
-                    except json.JSONDecodeError as e:
-                        console.print(f"[yellow]Skipping malformed JSON: {e}[/yellow]")
-                        continue
-                    except Exception as e:
-                        console.print(f"[yellow]Unexpected error: {e}[/yellow]")
-                        continue
-
-        return tool_calls
-
-    def display_streaming_response(self, chunks: list) -> str:
-        """
-        Display streaming response and return full text.
-
-        Args:
-            chunks: List of text chunks
-
-        Returns:
-            Full response text
-        """
-        full_text = "".join(chunks)
-
-        parts = re.split(r"(```tool_call.*?```)", full_text, flags=re.DOTALL)
-
-        for part in parts:
-            if part.startswith("```tool_call"):
-                console.print(Panel(part, title="Tool Call", border_style="cyan"))
-            elif part.strip():
-                console.print(Markdown(part))
-
-        return full_text
-
-    def run_conversation_turn(self, user_message: str) -> None:
-        """
-        Run one turn of the conversation with optimized execution strategy.
-
-        Args:
-            user_message: User's message
-        """
-        self.messages.append({"role": "user", "content": user_message})
-
-        try:
-            classification = None
-            if self.config.get("enable_task_classification", True):
-                classification = self.classifier.classify(user_message, self.messages)
-
-                exec_config = ExecutionStrategy.get_execution_config(
-                    classification,
-                    self.provider.provider_name,
-                    self.provider.model_name,
-                )
-
-                console.print(
-                    f"[dim]→ Execution mode: {exec_config.mode} "
-                    f"(model: {exec_config.model_tier}, "
-                    f"max_iter: {exec_config.max_iterations})[/dim]"
-                )
-
-                current_model = self.provider.model_name
-                target_model = exec_config.hyperparameters.get("model")
-
-                if target_model and target_model != current_model:
-                    try:
-                        self.provider.set_model(target_model)
-                        console.print(
-                            f"[dim]→ Switched model: {current_model} → {target_model}[/dim]"
-                        )
-                    except Exception:
-                        pass
-
-            else:
-                exec_config = ExecutionStrategy.get_execution_config(
-                    None,
-                    self.provider.provider_name,
-                    self.provider.model_name,
-                )
-
-            if exec_config.mode == "conversational":
-                self._run_conversational_turn(exec_config)
-
-            else:
-                self._run_agentic_turn(classification, exec_config, user_message)
-
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Interrupted[/yellow]")
-        except Exception as e:
-            import traceback
-
-            console.print(f"\n[red]Error: {e}[/red]")
-            console.print(f"[dim]{traceback.format_exc()}[/dim]")
-
-    def _run_conversational_turn(self, exec_config):
-        """
-        Handle conversational turn (no tools, single response).
-
-        Args:
-            exec_config: Execution configuration
-        """
-        # Check and manage context before LLM call
-        if self.context_manager:
-            self.messages, context_info = self.context_manager.check_and_manage(
-                self.messages
-            )
-            if context_info.get("action_taken"):
-                console.print(
-                    f"[yellow]→ Context managed: {context_info['action_taken']} "
-                    f"({context_info['tokens_before']} → "
-                    f"{context_info['tokens_after']} tokens)[/yellow]"
-                )
-
-        console.print("[bold cyan]Assistant:[/bold cyan]")
-        chunks = []
-
-        stream_options = exec_config.hyperparameters.copy()
-
-        # Add max_tokens if context manager is enabled
-        if self.context_manager and "max_tokens" not in stream_options:
-            stream_options["max_tokens"] = self.context_manager.max_output_tokens
-
-        for chunk in self.provider.generate_streaming(
-            self.messages, stream_options=stream_options
-        ):
-            console.print(chunk, end="")
-            chunks.append(chunk)
-
-        console.print("\n")
-
-        response_text = "".join(chunks)
-        self.messages.append({"role": "assistant", "content": response_text})
-
-    def _run_agentic_turn(self, classification, exec_config, user_message):
-        """
-        Handle agentic turn (with tools and iterations).
-
-        Args:
-            classification: Task classification
-            exec_config: Execution configuration
-            user_message: Original user message
-        """
-        if (
-            exec_config.use_planning
-            and classification
-            and classification.complexity == "COMPLEX"
-            and self.config.get("enable_planning_phase", True)
-        ):
-            response = Prompt.ask(
-                "[bold yellow]This looks complex. Create a plan first?[/bold yellow]",
-                choices=["yes", "no"],
-                default="no",
-            )
-
-            if response == "yes":
-                plan = self.planning_phase.execute_planning(user_message, self.messages)
-
-                approval = self.planning_phase.get_user_approval(plan)
-
-                if not approval.get("approved", False):
-                    console.print("[yellow]Task cancelled by user[/yellow]")
-                    return
-
-                # Add clear execution instruction after plan approval
-                if "modifications" in approval:
-                    self.messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Plan modifications: {approval['modifications']}\n\n"
-                                "Your plan has been APPROVED with these modifications. "
-                                "Execute it NOW. Do NOT restate the plan. Do NOT apologize. "
-                                "START IMMEDIATELY with tool calls."
-                            ),
-                        }
-                    )
-                else:
-                    self.messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Your plan has been APPROVED. Execute it NOW. "
-                                "Do NOT restate the plan. Do NOT apologize. "
-                                "START IMMEDIATELY with tool calls to implement the plan."
-                            ),
-                        }
-                    )
-
-        # Check and manage context before agent loop
-        if self.context_manager:
-            self.messages, context_info = self.context_manager.check_and_manage(
-                self.messages
-            )
-            if context_info.get("action_taken"):
-                console.print(
-                    f"[yellow]→ Context managed: {context_info['action_taken']} "
-                    f"({context_info['tokens_before']} → "
-                    f"{context_info['tokens_after']} tokens)[/yellow]"
-                )
-
-        original_max_iterations = self.agent_loop.max_iterations
-        self.agent_loop.max_iterations = exec_config.max_iterations
-
-        self.agent_loop.stream_options = exec_config.hyperparameters
-
-        result = self.agent_loop.run(
-            messages=self.messages,
-            tool_parser=self.parse_tool_calls,
-            display_callback=None,
-            user_request=user_message,
+            self._load(conversation_id)
+
+    # --- Setup ---------------------------------------------------------------
+
+    def _connect(self, provider_name: str):
+        """Create (or switch to) a provider and rebuild everything that depends on it."""
+        provider = ProviderFactory.create_provider(
+            self.config,
+            provider_name,
+            prompt_secret=prompt_secret if self.interactive else None,
         )
-
-        self.agent_loop.max_iterations = original_max_iterations
-
-        # Update stats
-        self.session_stats.iterations += result.get("iterations", 0)
-        self.session_stats.tool_calls += result.get("tool_calls", 0)
-
-        # Update token count (estimate from all messages)
-        if self.context_manager:
-            from .context_manager import TokenCounter
-
-            self.session_stats.total_tokens = TokenCounter.count_messages_tokens(
-                self.messages, self.provider.provider_name
-            )
-
-        if result["success"]:
-            console.print(
-                f"\n[dim]Completed in {result['iterations']} iteration(s) "
-                f"with {result['tool_calls']} tool call(s)[/dim]"
-            )
-        else:
-            console.print(f"\n[red]Error: {result.get('error')}[/red]")
-
-    def run(self):
-        """Run the interactive CLI."""
-        # Initialize enhanced prompt now that conversation_id is set
-        self.enhanced_prompt = create_enhanced_prompt(
-            working_dir=self.tool_executor.working_dir,
-            stats=self.session_stats,
+        self.provider = provider
+        self._model_cache = None
+        if self.interactive and hasattr(provider, "on_credentials_expired"):
+            provider.on_credentials_expired = self._refresh_aws_credentials
+        self.context_manager = None
+        if self.config.get("enable_context_management", True):
+            self.context_manager = ContextManager(provider, self.config.get_all())
+        self.agent = AgentLoop(
+            provider=provider,
+            tool_executor=self.tool_executor,
+            permissions=self.permissions,
+            renderer=self.renderer,
             context_manager=self.context_manager,
-            conversation_id=self.conversation_id,
+            max_iterations=int(self.config.get("max_iterations") or 50),
+            tool_calling=self.config.get("tool_calling", "auto"),
+            max_tool_result_chars=int(
+                self.config.get("max_tool_result_chars") or 30000
+            ),
+            max_parallel_workers=int(self.config.get("max_parallel_workers") or 4),
+            enable_parallel_tools=bool(self.config.get("enable_parallel_tools", True)),
+            session_stats=self.session_stats,
+            system_prompt_builder=self._build_system_prompt,
         )
 
+    def _build_system_prompt(self, text_protocol: bool) -> str:
+        return build_system_prompt(
+            self.tool_executor.working_dir,
+            tools=get_tool_specs(),
+            text_tool_protocol=text_protocol,
+            kubrick_dir=self.config.kubrick_dir,
+        )
+
+    def _system_message(self) -> dict:
+        return {
+            "role": "system",
+            "content": self._build_system_prompt(self.agent.text_protocol),
+        }
+
+    def _update_check(self):
+        """Mention a newer release (from the last check), and re-check in the background."""
+        if not self.config.get("check_for_updates", True):
+            return
+        from .updater import refresh_in_background, update_notice
+
+        notice = update_notice(self.config.kubrick_dir, __version__)
+        if notice:
+            self.renderer.notice(notice)
+        refresh_in_background(self.config.kubrick_dir)
+
+    def startup_checks(self):
+        """Warn about unreachable servers, expiring keys, and too-small context windows."""
+        if hasattr(self.provider, "explicit_credentials"):
+            from . import aws_credentials as awscreds
+
+            values = self.provider.explicit_credentials()
+            left = awscreds.seconds_left(values)
+            if left is not None:
+                text = f"AWS credentials {awscreds.describe_expiry(values)}"
+                if left < 1800:
+                    self.renderer.warning(text + "; /login to paste new ones.")
+                else:
+                    self.renderer.notice(text + ".")
+        if not self.provider.is_healthy():
+            self.renderer.warning(
+                f"Cannot reach the {self.provider.provider_name} provider. "
+                "Check the server/URL and credentials (`kubrick auth status`)."
+            )
+        cm = self.context_manager
+        if cm and cm.context_window < 16000:
+            self.renderer.warning(
+                f"Context window is only {cm.context_window:,} tokens; the system prompt and "
+                "tools alone use several thousand. For Ollama, start the server with "
+                "OLLAMA_CONTEXT_LENGTH=32768 (or more); for vLLM raise --max-model-len; "
+                "or set the real value with /config context_window <tokens>."
+            )
+
+    # --- Conversation --------------------------------------------------------
+
+    def run_turn(self, user_message: str) -> TurnResult:
+        """Send one user message and run the agent until it ends its turn."""
+        self.messages.append({"role": "user", "content": user_message})
+        result = self.agent.run(self.messages)
+        self._save()
+        return result
+
+    def _save(self) -> bool:
+        """Save the conversation; False if there was nothing (or nothing to) save."""
+        if not self.config.get("auto_save_conversations", True):
+            return False
+        if not any(m["role"] == "user" for m in self.messages):
+            return False  # nothing said yet; don't litter the conversation list
+        metadata = {
+            "working_dir": str(self.tool_executor.working_dir),
+            "provider": self.provider.provider_name,
+            "model_name": self.provider.model_name,
+            "saved_at": datetime.now().isoformat(),
+        }
+        self.config.save_conversation(self.conversation_id, self.messages, metadata)
+        return True
+
+    def _load(self, identifier: str) -> bool:
+        if identifier.isdigit() and self.last_listed_conversations:
+            idx = int(identifier) - 1
+            if not 0 <= idx < len(self.last_listed_conversations):
+                self.renderer.warning("No such conversation number; use /list.")
+                return False
+            identifier = self.last_listed_conversations[idx]["id"]
+        data = self.config.load_conversation(identifier)
+        if not data:
+            self.renderer.warning(f"Conversation not found: {identifier}")
+            return False
+        loaded = [m for m in data.get("messages", []) if m.get("role") != "system"]
+        self.messages = [self._system_message()] + loaded
+        self.conversation_id = data.get("id", identifier)
+        self.renderer.notice(
+            f"Loaded conversation {self.conversation_id} ({len(loaded)} messages)"
+        )
+        return True
+
+    def _new_conversation(self):
+        self._save()
+        self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.messages = [self._system_message()]
+        if self.context_manager:
+            self.context_manager = ContextManager(self.provider, self.config.get_all())
+            self.agent.context_manager = self.context_manager
+
+    # --- Interactive ---------------------------------------------------------
+
+    def _status(self) -> dict:
+        cm = self.context_manager
+        context = ""
+        if cm:
+            context = f"ctx {cm.usage_ratio(self.messages):.0%} of {cm.context_window // 1000}k"
+        s = self.session_stats
+        stats = []
+        if s.tool_calls:
+            stats.append(f"tools {s.tool_calls}")
+        if s.files_created or s.files_modified:
+            stats.append(f"files +{s.files_created} ~{s.files_modified}")
+        stats.append(s.get_runtime())
+        return {
+            "model": f"{self.provider.provider_name}:{self.provider.model_name}",
+            "mode": self.permissions.mode,
+            "context": context,
+            "stats": " · ".join(stats),
+            "dir": self.tool_executor.working_dir.name,
+        }
+
+    def run(self, initial_prompt: Optional[str] = None):
+        """Interactive session loop."""
         console.print(
             Panel.fit(
-                "[bold cyan]Kubrick CLI[/bold cyan]\n"
-                f"Working directory: {self.tool_executor.working_dir}\n"
-                f"Conversation ID: {self.conversation_id}\n"
-                "Type your questions or commands. Type 'exit' or 'quit' to exit.\n"
-                "Type '/help' to see all available in-session commands.\n"
-                "Type '/plan <task>' to force planning mode for complex tasks.\n"
-                "\n[dim]Press Enter to submit, Alt+Enter for new line, Ctrl+D also submits[/dim]",
+                f"[bold cyan]Kubrick[/bold cyan] {__version__}  ·  "
+                f"{escape(self.provider.provider_name)}:{escape(self.provider.model_name)}\n"
+                f"[dim]{escape(str(self.tool_executor.working_dir))}[/dim]\n"
+                f"[dim]/ for commands {glyph('dot')} Ctrl+C interrupts "
+                f"{glyph('dot')} Ctrl+D quits[/dim]",
                 border_style="cyan",
             )
         )
+        self.startup_checks()
+        self._update_check()
+        prompt = EnhancedPrompt(
+            self._status,
+            self.config.kubrick_dir / "history",
+            commands=COMMANDS,
+            argument_choices=self._argument_choices,
+            editing_mode=self.config.get("editing_mode", "emacs"),
+        )
 
-        if not self.provider.is_healthy():
-            console.print(
-                f"[red]Warning: Cannot connect to {self.provider.provider_name} provider[/red]"
-            )
-            console.print(
-                "[yellow]Please check your provider configuration and connectivity.[/yellow]"
-            )
+        if initial_prompt:
+            self.run_turn(initial_prompt)
 
+        interrupts = 0
         while True:
             try:
-                # Use enhanced prompt with multiline support
-                console.print()  # Add spacing
-                user_input = self.enhanced_prompt.get_input("You")
-
-                self.interrupt_count = 0
-                self.session_stats.input_chars += len(user_input)
-
-                if not user_input.strip():
-                    continue
-
-                if user_input.lower() in ["exit", "quit", "q"]:
-                    self._save_conversation()
-                    console.print(
-                        f"[cyan]Conversation saved as {self.conversation_id}[/cyan]"
-                    )
-                    console.print("[cyan]Goodbye![/cyan]")
-                    break
-
-                if user_input.startswith("/"):
-                    self._handle_command(user_input)
-                    continue
-
-                self.run_conversation_turn(user_input)
-
-                self._save_conversation()
-
+                console.print()
+                user_input = prompt.get_input(">")
+                interrupts = 0
             except KeyboardInterrupt:
-                self.interrupt_count += 1
-
-                if self.interrupt_count == 1:
-                    console.print(
-                        "\n[yellow]^C (Press again to start new conversation, "
-                        "once more to exit)[/yellow]"
-                    )
-                    continue
-
-                elif self.interrupt_count == 2:
-                    console.print("\n[yellow]Starting new conversation...[/yellow]")
-                    self._save_conversation()
-
-                    self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    self.messages = self._get_initial_messages()
-
-                    console.print(
-                        f"[cyan]New conversation ID: {self.conversation_id}[/cyan]"
-                    )
-                    console.print("[dim]Press Ctrl+C once more to exit[/dim]")
-                    continue
-
-                else:
-                    self._save_conversation()
-                    console.print(
-                        f"\n[cyan]Conversation saved as {self.conversation_id}[/cyan]"
-                    )
-                    console.print("[cyan]Goodbye![/cyan]")
+                interrupts += 1
+                if interrupts >= 2:
                     break
+                console.print("[dim](Press Ctrl+C again or type exit to quit)[/dim]")
+                continue
 
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
-
-    def _handle_command(self, command: str):
-        """Handle special CLI commands."""
-        parts = command.strip().split()
-        cmd = parts[0].lower()
-
-        if cmd == "/save":
-            self._save_conversation()
-            console.print(
-                f"[green]Conversation saved as {self.conversation_id}[/green]"
-            )
-
-        elif cmd == "/plan":
-            # Get user's task for planning
-            if len(parts) > 1:
-                # Task provided inline: /plan Create a new feature
-                task = " ".join(parts[1:])
-            else:
-                # Prompt for task
-                console.print(
-                    "[bold yellow]Planning Mode[/bold yellow]\n"
-                    "[dim]Enter your task/request for planning:[/dim]"
-                )
-                task = Prompt.ask("[bold cyan]Task[/bold cyan]")
-
-            if not task.strip():
-                console.print("[yellow]No task provided[/yellow]")
-                return
-
-            console.print(f"[dim]→ Creating plan for: {task}[/dim]\n")
-
-            # Add user message
-            self.messages.append({"role": "user", "content": task})
-
-            # Execute planning phase
-            plan = self.planning_phase.execute_planning(task, self.messages)
-
-            # Get user approval
-            approval = self.planning_phase.get_user_approval(plan)
-
-            if not approval.get("approved", False):
-                console.print("[yellow]Plan cancelled[/yellow]")
-                # Remove the user message since we're not proceeding
-                self.messages.pop()
-                return
-
-            # Add clear execution instruction after plan approval
-            if "modifications" in approval:
-                self.messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Your plan has been APPROVED with these modifications: "
-                            f"{approval['modifications']}\n\n"
-                            "Execute it NOW. Do NOT restate the plan. Do NOT apologize. "
-                            "START IMMEDIATELY with tool calls to implement the plan."
-                        ),
-                    }
-                )
-            else:
-                self.messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Your plan has been APPROVED. Execute it NOW. "
-                            "Do NOT restate the plan. Do NOT apologize. "
-                            "START IMMEDIATELY with tool calls to implement the plan."
-                        ),
-                    }
-                )
-
-            # Now execute with full agent loop
-            console.print("\n[bold green]→ Executing plan...[/bold green]\n")
-
-            # Update agent loop settings for execution
-            old_max = self.agent_loop.max_iterations
-            self.agent_loop.max_iterations = 15
-
-            result = self.agent_loop.run(
-                messages=self.messages,
-                tool_parser=self.parse_tool_calls,
-                display_callback=None,
-                user_request=task,
-            )
-
-            # Restore settings
-            self.agent_loop.max_iterations = old_max
-
-            if result.get("success"):
-                console.print(
-                    f"\n[green]✓ Plan execution complete in {result['iterations']} iteration(s) "
-                    f"with {result['tool_calls']} tool call(s)[/green]"
-                )
-            else:
-                console.print(f"\n[red]Error: {result.get('error')}[/red]")
-
-            # Save after execution
-            self._save_conversation()
-
-        elif cmd == "/list":
-            limit = int(parts[1]) if len(parts) > 1 else 20
-            conversations = self.config.list_conversations(limit=limit)
-
-            if not conversations:
-                console.print("[yellow]No saved conversations found[/yellow]")
-                return
-
-            self.last_listed_conversations = conversations
-
-            table = Table(title="Saved Conversations")
-            table.add_column("#", style="magenta", justify="right")
-            table.add_column("ID", style="cyan")
-            table.add_column("Messages", justify="right", style="green")
-            table.add_column("Working Dir", style="dim")
-            table.add_column("Modified", style="yellow")
-
-            for idx, conv in enumerate(conversations, start=1):
-                conv_id = conv["id"]
-                msg_count = str(conv["message_count"])
-                working_dir = conv["metadata"].get("working_dir", "N/A")
-                modified = datetime.fromtimestamp(conv["modified"]).strftime(
-                    "%Y-%m-%d %H:%M"
-                )
-
-                table.add_row(str(idx), conv_id, msg_count, working_dir, modified)
-
-            console.print(table)
-            console.print(
-                "[dim]Use '/load <#>' to load a conversation by number (e.g., /load 1)[/dim]"
-            )
-
-        elif cmd == "/config":
-            if len(parts) == 1:
-                config_data = self.config.get_all()
-                table = Table(title="Current Configuration")
-                table.add_column("Setting", style="cyan")
-                table.add_column("Value", style="green")
-
-                for key, value in config_data.items():
-                    table.add_row(key, str(value))
-
-                console.print(table)
-
-            elif len(parts) == 3:
-                key = parts[1]
-                value = parts[2]
-
+            if not user_input:
+                continue
+            if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
+                break
+            if _is_command(user_input):
                 try:
-                    value = json.loads(value)
-                except json.JSONDecodeError:
-                    pass
+                    self.handle_command(user_input)
+                except (ProviderError, ValueError) as e:
+                    self.renderer.error(str(e))
+                except (KeyboardInterrupt, EOFError):
+                    self.renderer.notice("Cancelled.")
+                continue
+            try:
+                self.run_turn(user_input)
+            except KeyboardInterrupt:
+                self.renderer.warning("Interrupted.")
 
+        if self._save():
+            console.print(f"[dim]Conversation saved as {self.conversation_id}[/dim]")
+
+    # --- Slash commands ------------------------------------------------------
+
+    def handle_command(self, command: str):
+        parts = command.strip().split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        handlers = {
+            "/help": lambda: console.print(help_text()),
+            "/clear": self._cmd_clear,
+            "/compact": lambda: self._cmd_compact(arg),
+            "/context": self._cmd_context,
+            "/model": lambda: self._cmd_model(arg),
+            "/provider": lambda: self._cmd_provider(arg),
+            "/setup": self._cmd_setup,
+            "/login": self._cmd_login,
+            "/plan": self._cmd_plan,
+            "/permissions": lambda: self._cmd_permissions(arg),
+            "/init": lambda: self.run_turn(INIT_PROMPT),
+            "/status": self._cmd_status,
+            "/save": self._cmd_save,
+            "/list": lambda: self._cmd_list(arg),
+            "/load": lambda: (
+                self._load(arg) if arg else console.print("Usage: /load <#|id>")
+            ),
+            "/delete": lambda: self._cmd_delete(arg),
+            "/config": lambda: self._cmd_config(arg),
+            "/debug": lambda: self._cmd_debug(arg),
+            "/update": self._cmd_update,
+        }
+        if cmd not in handlers:
+            # Unambiguous prefixes work too: /pro -> /provider.
+            matches = [name for name in handlers if name.startswith(cmd)]
+            if len(matches) != 1:
+                hint = f" Did you mean {', '.join(matches)}?" if matches else ""
+                self.renderer.warning(f"Unknown command {cmd}.{hint} Type /help.")
+                return
+            cmd = matches[0]
+        handlers[cmd]()
+
+    def _argument_choices(self, command: str) -> List[Tuple[str, str]]:
+        """Completions for a command's argument (runs in a background thread)."""
+        if command == "/provider":
+            current = self.provider.provider_name
+            return [
+                (m.name, m.display_name + (" (current)" if m.name == current else ""))
+                for m in ProviderFactory.list_available_providers()
+            ]
+        if command == "/model":
+            current = self.provider.model_name
+            return [(m, "current" if m == current else "") for m in self._models()]
+        if command == "/permissions":
+            return [(m, MODE_DESCRIPTIONS[m]) for m in MODES]
+        if command == "/config":
+            return [
+                (k, json.dumps(v)[:40])
+                for k, v in sorted(self.config.get_all().items())
+            ]
+        if command in ("/load", "/delete"):
+            return [
+                (
+                    c["id"],
+                    f"{c['metadata'].get('model_name', '')} {glyph('dot')} "
+                    f"{c['message_count']} msgs {glyph('dot')} "
+                    f"{os.path.basename(c['metadata'].get('working_dir', ''))}",
+                )
+                for c in self.config.list_conversations(limit=30)
+            ]
+        if command == "/debug":
+            return [("prompt", "System prompt"), ("messages", "Last 10 messages")]
+        return []
+
+    def _models(self) -> List[str]:
+        """The provider's models, fetched once per provider."""
+        if self._model_cache is None:
+            self._model_cache = self.provider.list_models()
+        return self._model_cache
+
+    def _cmd_clear(self):
+        self._new_conversation()
+        self.renderer.notice(f"New conversation {self.conversation_id}")
+
+    def _cmd_compact(self, focus: str):
+        if not self.context_manager:
+            self.context_manager = ContextManager(self.provider, self.config.get_all())
+        if len(self.messages) < 4:
+            self.renderer.notice("Nothing to compact yet.")
+            return
+        self.renderer.notice("Summarizing conversation…")
+        self.messages, info = self.context_manager.compact(self.messages, focus or None)
+        self.renderer.notice(
+            f"Compacted ({info['action']}): ~{info['tokens_before']:,} {glyph('arrow')} "
+            f"~{info['tokens_after']:,} tokens"
+        )
+
+    def _cmd_context(self):
+        cm = self.context_manager
+        if not cm:
+            self.renderer.notice("Context management is disabled.")
+            return
+        tokens = cm.current_tokens(self.messages)
+        table = Table(title="Context")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Estimated tokens in use", f"{tokens:,}")
+        table.add_row("Context window", f"{cm.context_window:,}")
+        table.add_row("Reserved for output", f"{cm.reserved_output:,}")
+        table.add_row("Usage", f"{cm.usage_ratio(self.messages):.1%}")
+        table.add_row("Auto-compact at", f"{cm.usage_threshold:.0%}")
+        table.add_row("Messages", str(len(self.messages)))
+        if cm.last_usage:
+            u = cm.last_usage
+            table.add_row(
+                "Last request (reported)",
+                f"in {u.input_tokens:,} · cache read {u.cache_read_tokens:,} · "
+                f"out {u.output_tokens:,}",
+            )
+        console.print(table)
+
+    def _cmd_model(self, name: str):
+        if not name:
+            current = self.provider.model_name
+            with console.status(f"Fetching models{glyph('ellipsis')}"):
+                models = self._models()
+            if not models:
+                console.print(f"Current model: [cyan]{escape(current)}[/cyan]")
+                console.print("[dim]Switch with /model <name>[/dim]")
+                return
+            choices = [Choice(m, m, current=m == current) for m in models]
+            choices.append(Choice("", "Other...", "Type a model name"))
+            name = pick(
+                "Switch model", choices, filterable=len(models) > 9, summary="Model"
+            )
+            if name == "":
+                name = ask_text("Model name")
+            if not name or name == current:
+                return
+        self.provider.set_model(name)
+        self.config.override(f"{self.provider.provider_name}_model", name)
+        if self.context_manager:
+            self.context_manager = ContextManager(self.provider, self.config.get_all())
+            self.agent.context_manager = self.context_manager
+        self.renderer.notice(
+            f"Switched to {name} for this session "
+            f"(save with /config {self.provider.provider_name}_model {name})"
+        )
+
+    def _cmd_provider(self, name: str):
+        if not name:
+            metadata = choose_provider(self.provider.provider_name, "Switch provider")
+            if metadata is None or metadata.name == self.provider.provider_name:
+                return
+            name = metadata.name
+        try:
+            self._connect(name)
+        except ValueError as e:
+            # Not configured yet (no model, no key): offer to set it up now.
+            self.renderer.warning(str(e))
+            metadata = ProviderFactory.get_provider_metadata(name)
+            if not pick(
+                f"Set up {metadata.display_name} now?",
+                [Choice(True, "Yes"), Choice(False, "No")],
+            ):
+                return
+            for key, value in SetupWizard.configure_provider(
+                self.config, metadata
+            ).items():
                 self.config.set(key, value)
-                console.print(f"[green]Set {key} = {value}[/green]")
+            self._connect(name)
+        self.config.override("provider", name)
+        if self.messages and self.messages[0]["role"] == "system":
+            self.messages[0] = self._system_message()
+        self.renderer.notice(
+            f"Switched to {name}:{self.provider.model_name} for this session "
+            f"(save with /config provider {name})"
+        )
 
-            else:
-                console.print("[yellow]Usage: /config [key value][/yellow]")
+    def _cmd_setup(self):
+        settings = SetupWizard.run(self.config)
+        for key, value in settings.items():
+            self.config.set(key, value)
+        self._connect(settings["provider"])
+        if self.messages and self.messages[0]["role"] == "system":
+            self.messages[0] = self._system_message()
+        self.renderer.notice(
+            f"Now using {self.provider.provider_name}:{self.provider.model_name}"
+        )
 
-        elif cmd == "/delete":
-            if len(parts) < 2:
-                console.print("[yellow]Usage: /delete <conversation_id>[/yellow]")
-                return
+    def _refresh_aws_credentials(self, provider) -> bool:
+        """Called by the Bedrock provider when its credentials are rejected or expired."""
+        from .setup_wizard import ask_aws_credentials
 
-            conv_id = parts[1]
-            if self.config.delete_conversation(conv_id):
-                console.print(f"[green]Deleted conversation {conv_id}[/green]")
-            else:
-                console.print(f"[yellow]Conversation {conv_id} not found[/yellow]")
-
-        elif cmd == "/load":
-            if len(parts) < 2:
-                console.print("[yellow]Usage: /load <#|conversation_id|path>[/yellow]")
-                console.print(
-                    "[dim]Tip: Use '/list' to see available conversations[/dim]"
-                )
-                return
-
-            identifier = parts[1]
-
-            if identifier.isdigit():
-                idx = int(identifier) - 1
-                if not self.last_listed_conversations:
-                    console.print(
-                        "[yellow]No conversations listed. Use '/list' first.[/yellow]"
-                    )
-                    return
-                if idx < 0 or idx >= len(self.last_listed_conversations):
-                    console.print(
-                        "[yellow]Invalid number. "
-                        f"Choose 1-{len(self.last_listed_conversations)}[/yellow]"
-                    )
-                    return
-
-                conversation_id = self.last_listed_conversations[idx]["id"]
-            else:
-                conversation_id = identifier
-
-            conversation = self.config.load_conversation(conversation_id)
-            if not conversation:
-                console.print(
-                    f"[yellow]Failed to load conversation: {conversation_id}[/yellow]"
-                )
-                return
-
-            self.messages = conversation["messages"]
-            self.conversation_id = conversation["id"]
-
-            msg_count = len(self.messages)
-            console.print(
-                f"[green]Loaded conversation {conversation['id']} ({msg_count} messages)[/green]"
+        self.renderer.warning(
+            f"Your AWS credentials have expired or were rejected "
+            f"({provider.credential_source()})."
+        )
+        choices = [Choice("paste", "Paste new credentials", "input is hidden")]
+        if provider.credentials_file:
+            choices.append(
+                Choice("file", f"I've updated {provider.credentials_file}; try again")
             )
+        elif provider.profile:
+            choices.append(Choice("file", f"I've refreshed profile {provider.profile}"))
+        choices.append(Choice("cancel", "Cancel this request"))
+        answer = pick("What now?", choices)
+        if answer == "file":
+            return True
+        if answer != "paste":
+            return False
+        values = ask_aws_credentials()
+        if not values:
+            return False
+        self._apply_aws_credentials(provider, values)
+        return True
 
-        elif cmd == "/context":
-            if not self.context_manager:
-                console.print("[yellow]Context management is disabled[/yellow]")
-                console.print(
-                    "[dim]Enable it with: /config enable_context_management true[/dim]"
-                )
-                return
+    def _apply_aws_credentials(self, provider, values):
+        from . import aws_credentials as awscreds
+        from .setup_wizard import store_aws_credentials
 
-            tokens = self.context_manager.token_counter.count_messages_tokens(
-                self.messages, self.provider.provider_name
+        store_aws_credentials(self.config, values, provider.credentials_file)
+        if not provider.credentials_file:
+            provider.pasted_credentials = values
+            provider.profile = None  # pasted keys take over for this session
+        if not provider.region and awscreds.region_of(values):
+            provider.region = awscreds.region_of(values)
+
+    def _cmd_login(self):
+        if self.provider.provider_name == "bedrock":
+            from .setup_wizard import ask_aws_credentials
+
+            values = ask_aws_credentials()
+            if values:
+                self._apply_aws_credentials(self.provider, values)
+                self.provider.reload_credentials()
+                self.renderer.notice("Using the new AWS credentials.")
+            return
+        metadata = ProviderFactory.get_provider_metadata(self.provider.provider_name)
+        if not metadata.secret_fields:
+            self.renderer.notice(
+                f"{metadata.display_name} has no credentials to enter."
             )
+            return
+        for field in metadata.secret_fields:
+            value = prompt_secret(metadata.name, field)
+            if value:
+                self.config.credentials.set(field["key"], value)
+        self._connect(self.provider.provider_name)
+        self.renderer.notice("Reconnected with the new credentials.")
 
-            usage_percent = (
-                (tokens / self.context_manager.context_window) * 100
-                if self.context_manager.context_window > 0
-                else 0
+    def _cmd_plan(self):
+        if self.permissions.mode == "plan":
+            self.permissions.mode = getattr(self, "_mode_before_plan", "default")
+            self.renderer.notice(
+                f"Plan mode off (permissions: {self.permissions.mode})."
             )
-
-            table = Table(title="Context Window Status")
-            table.add_column("Metric", style="cyan")
-            table.add_column("Value", style="green")
-
-            table.add_row("Current Tokens", str(tokens))
-            table.add_row("Context Window", str(self.context_manager.context_window))
-            table.add_row("Usage", f"{usage_percent:.1f}%")
-            table.add_row("Messages", str(len(self.messages)))
-            table.add_row(
-                "Trim Threshold",
-                f"{self.context_manager.usage_threshold * 100:.0f}%",
-            )
-            table.add_row(
-                "Summarize Threshold",
-                f"{self.context_manager.summarization_threshold * 100:.0f}%",
-            )
-            table.add_row(
-                "Min Messages to Keep",
-                str(self.context_manager.min_messages_to_keep),
-            )
-
-            console.print(table)
-
-            # Show status indicator
-            if usage_percent >= self.context_manager.summarization_threshold * 100:
-                console.print(
-                    "\n[red]⚠ Context critically high - "
-                    "summarization will be triggered on next turn[/red]"
-                )
-            elif usage_percent >= self.context_manager.usage_threshold * 100:
-                console.print(
-                    "\n[yellow]⚠ Context high - "
-                    "trimming will be triggered on next turn[/yellow]"
-                )
-            else:
-                console.print("\n[green]✓ Context usage healthy[/green]")
-
-        elif cmd == "/debug":
-            table = Table(title="Debug Information")
-            table.add_column("Item", style="cyan")
-            table.add_column("Value", style="green")
-
-            table.add_row("Conversation ID", self.conversation_id)
-            table.add_row("Messages Count", str(len(self.messages)))
-            table.add_row("Working Dir", str(self.tool_executor.working_dir))
-            table.add_row("Provider", self.provider.provider_name)
-            table.add_row("Model Name", self.provider.model_name)
-
-            console.print(table)
-
-            if len(parts) > 1 and parts[1] == "prompt":
-                console.print("\n[bold cyan]System Prompt:[/bold cyan]")
-                system_msg = next(
-                    (m for m in self.messages if m["role"] == "system"), None
-                )
-                if system_msg:
-                    console.print(Panel(system_msg["content"], border_style="dim"))
-                else:
-                    console.print("[yellow]No system message found[/yellow]")
-
-        elif cmd == "/help":
-            console.print(
-                """
-[bold cyan]In-Session Commands:[/bold cyan]
-
-[bold yellow]Conversation Management:[/bold yellow]
-  [green]/save[/green]              - Manually save the current conversation
-  [green]/list [N][/green]          - List saved conversations (default: 20, \
-shows numbered list)
-  [green]/load <#|ID>[/green]       - Load a conversation by number (from /list) or ID
-                        Example: [dim]/load 1[/dim] or [dim]/load 20240118_143022[/dim]
-  [green]/delete ID[/green]         - Delete a saved conversation by ID
-
-[bold yellow]Planning Mode:[/bold yellow]
-  [green]/plan[/green]              - Force planning mode for any task
-  [green]/plan <task>[/green]       - Create a plan for the specified task inline
-                        Example: [dim]/plan Refactor the authentication system[/dim]
-                        The agent will explore the codebase, create a plan, and
-                        execute it after your approval
-
-[bold yellow]Configuration:[/bold yellow]
-  [green]/config[/green]            - Show current configuration
-  [green]/config KEY VALUE[/green]  - Update a configuration setting
-                        Example: [dim]/config max_iterations 20[/dim]
-
-[bold yellow]Context Management:[/bold yellow]
-  [green]/context[/green]           - Show context window usage, limits, and warnings
-                        Displays: tokens used, window size, usage %, thresholds
-
-[bold yellow]Debugging:[/bold yellow]
-  [green]/debug[/green]             - Show debug information \
-(conversation ID, message count, etc.)
-  [green]/debug prompt[/green]      - Display the full system prompt being used
-
-[bold yellow]General:[/bold yellow]
-  [green]/help[/green]              - Show this help message
-  [green]exit[/green] or [green]quit[/green]     - Save conversation and exit Kubrick
-
-[bold cyan]Common Configuration Examples:[/bold cyan]
-
-[yellow]For Triton/vLLM users with custom context:[/yellow]
-  /config model_max_context_override 16384
-  /config max_output_tokens 2048
-  /context  [dim]# Verify your settings[/dim]
-
-[yellow]Adjust context management:[/yellow]
-  /config context_usage_threshold 0.60        [dim]# Trim earlier (more aggressive)[/dim]
-  /config context_summarization_threshold 0.75
-  /config max_output_tokens 4096              [dim]# For longer responses[/dim]
-
-[yellow]Agent behavior:[/yellow]
-  /config max_iterations 20                   [dim]# Allow more iterations[/dim]
-  /config max_tools_per_turn 10               [dim]# Allow more tools per turn[/dim]
-  /config enable_parallel_tools false         [dim]# Disable parallel execution[/dim]
-
-[bold cyan]Tips:[/bold cyan]
-  • Use [cyan]/list[/cyan] to see numbered conversations, \
-then [cyan]/load 1[/cyan] to load by number
-  • Use [cyan]/context[/cyan] regularly to monitor token usage during long conversations
-  • For Triton/vLLM: ALWAYS set [cyan]model_max_context_override[/cyan] to match your \
---max-model-len
-  • OpenAI/Anthropic users: Defaults are optimized (128k/200k context)
-  • Type [cyan]/config[/cyan] to see all available configuration options
-
-[bold cyan]Documentation:[/bold cyan]
-  • Full docs: [dim]docs/WIKI.md[/dim]
-  • Context management guide: [dim]CONTEXT_MANAGEMENT_QUICKSTART.md[/dim]
-  • Provider setup: [dim]docs/PROVIDERS.md[/dim]
-            """
-            )
-
         else:
-            console.print(f"[yellow]Unknown command: {cmd}[/yellow]")
-            console.print(
-                "[dim]Available commands: "
-                "/save, /plan, /list, /load, /config, /delete, "
-                "/context, /debug, /help, exit, quit[/dim]"
+            self._mode_before_plan = self.permissions.mode
+            self.permissions.mode = "plan"
+            self.renderer.notice(
+                "Plan mode on: the agent can only read and investigate. "
+                "Ask for a plan; run /plan again to let it make changes."
             )
 
+    def _cmd_permissions(self, mode: str):
+        if not mode:
+            if self.permissions.allowed_command_prefixes:
+                console.print(
+                    "Always-allowed commands this session: "
+                    + escape(
+                        ", ".join(sorted(self.permissions.allowed_command_prefixes))
+                    )
+                )
+            mode = pick(
+                "Permission mode",
+                [
+                    Choice(
+                        m, m, MODE_DESCRIPTIONS[m], current=m == self.permissions.mode
+                    )
+                    for m in MODES
+                ],
+                summary="Permission mode",
+            )
+            if not mode or mode == self.permissions.mode:
+                return
+        if mode not in MODES:
+            self.renderer.warning(f"Unknown mode {mode}. Choose: {', '.join(MODES)}")
+            return
+        self.permissions.mode = mode
+        self.renderer.notice(f"Permission mode: {mode}")
 
-def main():
-    """Main entry point."""
-    config = KubrickConfig()
+    def _cmd_status(self):
+        s = self.session_stats
+        table = Table(title="Session")
+        table.add_column("", style="cyan")
+        table.add_column("")
+        table.add_row(
+            "Provider / model",
+            f"{self.provider.provider_name} / {self.provider.model_name}",
+        )
+        table.add_row(
+            "Tool calling", "text protocol" if self.agent.text_protocol else "native"
+        )
+        table.add_row("Permission mode", self.permissions.mode)
+        table.add_row("Credential store", self.config.credentials.backend_name)
+        if hasattr(self.provider, "credential_source"):
+            table.add_row("AWS credentials", self.provider.credential_source())
+        table.add_row("Conversation", self.conversation_id)
+        table.add_row("Working dir", str(self.tool_executor.working_dir))
+        table.add_row(
+            "Tokens (session)",
+            f"in {s.input_tokens:,} · cache read {s.cache_read_tokens:,} · out {s.output_tokens:,}",
+        )
+        table.add_row("Tool calls", str(s.tool_calls))
+        table.add_row("Runtime", s.get_runtime())
+        console.print(table)
 
+    def _cmd_save(self):
+        self._save()
+        self.renderer.notice(f"Saved as {self.conversation_id}")
+
+    def _cmd_list(self, arg: str):
+        conversations = self.config.list_conversations(
+            limit=int(arg) if arg.isdigit() else 20
+        )
+        if not conversations:
+            self.renderer.notice("No saved conversations.")
+            return
+        self.last_listed_conversations = conversations
+        table = Table(title="Saved conversations")
+        table.add_column("#", style="magenta", justify="right")
+        table.add_column("ID", style="cyan")
+        table.add_column("Msgs", justify="right")
+        table.add_column("Model", style="dim")
+        table.add_column("Working dir", style="dim")
+        table.add_column("Modified", style="yellow")
+        for idx, conv in enumerate(conversations, 1):
+            meta = conv["metadata"]
+            table.add_row(
+                str(idx),
+                conv["id"],
+                str(conv["message_count"]),
+                meta.get("model_name", ""),
+                meta.get("working_dir", ""),
+                datetime.fromtimestamp(conv["modified"]).strftime("%Y-%m-%d %H:%M"),
+            )
+        console.print(table)
+        console.print("[dim]/load <#> to resume[/dim]")
+
+    def _cmd_delete(self, conv_id: str):
+        if not conv_id:
+            console.print("Usage: /delete <id>")
+        elif self.config.delete_conversation(conv_id):
+            self.renderer.notice(f"Deleted {conv_id}")
+        else:
+            self.renderer.warning(f"Conversation {conv_id} not found")
+
+    def _cmd_config(self, arg: str):
+        parts = arg.split(maxsplit=1)
+        if not parts:
+            table = Table(title=f"Configuration ({self.config.config_file})")
+            table.add_column("Setting", style="cyan")
+            table.add_column("Value", style="green")
+            for key, value in sorted(self.config.get_all().items()):
+                table.add_row(key, escape(json.dumps(value)))
+            console.print(table)
+            console.print(
+                "[dim]API keys are not shown; see `kubrick auth status`.[/dim]"
+            )
+            return
+        key = parts[0]
+        if len(parts) == 1:
+            console.print(f"{key} = {json.dumps(self.config.get(key))}")
+            return
+        if key.endswith("_api_key"):
+            self.renderer.warning(
+                "Store API keys with `kubrick auth login`, not /config."
+            )
+            return
+        try:
+            value = json.loads(parts[1])
+        except json.JSONDecodeError:
+            value = parts[1]
+        self.config.set(key, value)
+        self.renderer.notice(
+            f"Set {key} = {json.dumps(value)} (takes effect on restart for "
+            "provider settings)"
+        )
+
+    def _cmd_update(self):
+        from .updater import run_update
+
+        run_update(__version__, console, confirm=_confirm)
+
+    def _cmd_debug(self, arg: str):
+        if arg == "prompt":
+            console.print(
+                Panel(
+                    escape(self.messages[0]["content"]),
+                    title="System prompt",
+                    border_style="dim",
+                )
+            )
+            return
+        if arg == "messages":
+            console.print_json(json.dumps(self.messages[-10:], default=str))
+            return
+        console.print("Usage: /debug prompt | /debug messages")
+
+
+# --- Entry point -------------------------------------------------------------
+
+
+def _confirm(question: str) -> bool:
+    return bool(pick(question, [Choice(True, "Yes"), Choice(False, "No")]))
+
+
+def _is_command(text: str) -> bool:
+    """A /command, as opposed to a message that starts with a path like /etc/hosts."""
+    return text.startswith("/") and text.split()[0].count("/") == 1
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Kubrick - AI-assisted coding CLI with agentic capabilities",
+        prog="kubrick",
+        description="Kubrick: an agentic coding CLI for local and hosted models.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-In-Session Commands:
-  /save              Save the current conversation
-  /plan [task]       Force planning mode (explore → plan → approve → execute)
-  /list [N]          List saved conversations (default: 20)
-  /load <#|ID>       Load a conversation by number or ID
-  /config            Show current configuration
-  /config KEY VALUE  Set a configuration value
-  /delete ID         Delete a conversation
-  /debug             Show debug information
-  /debug prompt      Show the system prompt
-  /help              Show all available commands
-  exit or quit       Save conversation and exit
+        epilog="""Other commands:
+  kubrick setup                       Run the setup wizard
+  kubrick auth login [provider]       Store an API key (encrypted / OS keychain)
+  kubrick auth logout [provider]      Remove stored API keys
+  kubrick auth status                 Show where credentials come from
+  kubrick update [--check] [--yes]    Upgrade to the latest release
 
 Examples:
-  kubrick                                     # Start new conversation
-  kubrick --load 20240118_143022              # Load by conversation ID
-  kubrick --load /path/to/conversation.json   # Load from file path
-  kubrick --working-dir /path/to/project      # Set working directory
-  kubrick --provider openai                   # Override provider for this session
-        """,
+  kubrick                                   Start an interactive session
+  kubrick "fix the failing test"            Start with a first message
+  kubrick -p "summarize this repo"          Answer once and exit (scriptable)
+  git diff | kubrick -p "review this diff"  Pipe input in
+  kubrick --provider anthropic --model claude-sonnet-5-5
+  kubrick -c                                Continue the most recent conversation
+""",
     )
-
+    parser.add_argument("prompt", nargs="?", help="Initial message")
     parser.add_argument(
-        "--working-dir",
-        default=None,
-        help="Working directory for file operations (default: current directory)",
+        "-p",
+        "--print",
+        dest="print_mode",
+        action="store_true",
+        help="Run the prompt non-interactively, print the answer, and exit",
     )
-
     parser.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_last",
+        action="store_true",
+        help="Continue the most recent conversation",
+    )
+    parser.add_argument(
+        "-r",
+        "--resume",
         "--load",
-        "--load-conversation",
         dest="conversation_id",
-        default=None,
-        help=(
-            "Load a previous conversation by ID or file path "
-            "(e.g., 20240118_143022 or /path/to/conversation.json)"
-        ),
+        help="Resume a conversation by ID or file path",
     )
-
+    parser.add_argument("--provider", help="Provider for this session")
+    parser.add_argument("-m", "--model", help="Model for this session")
     parser.add_argument(
-        "--provider",
-        default=None,
-        choices=["triton", "openai", "anthropic"],
-        help="Override configured provider for this session",
+        "--working-dir", "-C", help="Working directory (default: current)"
     )
+    parser.add_argument(
+        "--permission-mode", choices=MODES, help="Permission mode for this session"
+    )
+    parser.add_argument(
+        "--tool-calling",
+        choices=["auto", "native", "text"],
+        help="Force native or text-based tool calling",
+    )
+    parser.add_argument(
+        "--max-iterations", type=int, help="Model calls allowed per turn"
+    )
+    parser.add_argument("--version", action="version", version=f"kubrick {__version__}")
+    return parser
 
-    args = parser.parse_args()
+
+def _run_subcommand(argv: List[str]) -> Optional[int]:
+    """Handle `kubrick setup` / `kubrick auth ...`; None if argv isn't one."""
+    if not argv or argv[0] not in ("setup", "auth", "update"):
+        return None
+    if argv[0] == "update":
+        from .updater import run_update
+
+        flags = set(argv[1:])
+        unknown = flags - {"--check", "--yes", "-y"}
+        if unknown:
+            console.print("Usage: kubrick update [--check] [--yes]")
+            return 2
+        yes = bool(flags & {"--yes", "-y"})
+        interactive = sys.stdin.isatty()
+        return run_update(
+            __version__,
+            console,
+            confirm=_confirm if interactive and not yes else None,
+            # Without a terminal, only upgrade when explicitly told to.
+            check_only="--check" in flags or not (interactive or yes),
+        )
+    config = KubrickConfig(skip_wizard=True)
+    if argv[0] == "setup":
+        try:
+            settings = SetupWizard.run(config)
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Setup cancelled; nothing was changed.[/dim]")
+            return 130
+        for key, value in settings.items():
+            config.set(key, value)
+        return 0
+    action = argv[1] if len(argv) > 1 else "status"
+    provider = argv[2] if len(argv) > 2 else None
+    if action == "login":
+        return auth_login(config, provider)
+    if action == "logout":
+        return auth_logout(config, provider)
+    if action == "status":
+        return auth_status(config)
+    console.print("Usage: kubrick auth [login|logout|status] [provider]")
+    return 2
+
+
+def _read_piped_stdin(wait: bool = False) -> str:
+    """Read input piped into kubrick (``git diff | kubrick -p ...``).
+
+    Only reads when stdin is a file, or a pipe/socket with data ready within a
+    moment: harnesses, cron and IDE terminals often leave an idle pipe open that
+    would otherwise block forever. With ``wait`` (no prompt argument given, so
+    stdin is the only possible input) it blocks until the pipe closes.
+    """
+    if sys.stdin is None or sys.stdin.isatty():
+        return ""
+    try:
+        mode = os.fstat(sys.stdin.fileno()).st_mode
+    except (OSError, ValueError, io.UnsupportedOperation):
+        return sys.stdin.read()  # not a real file descriptor (e.g. tests)
+    if stat.S_ISREG(mode) or wait:
+        return sys.stdin.read()
+    if os.name == "nt":
+        return ""
+    ready, _, _ = select.select([sys.stdin], [], [], 0.25)
+    return sys.stdin.read() if ready else ""
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Main entry point."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    code = _run_subcommand(argv)
+    if code is not None:
+        return code
+
+    args = _build_parser().parse_args(argv)
+    if not is_interactive():
+        args.print_mode = True  # no terminal to talk to: answer once and exit
+    interactive = not args.print_mode
+
+    prompt = args.prompt
+    piped = _read_piped_stdin(wait=prompt is None)
+    if piped.strip():
+        prompt = f"{prompt}\n\n{piped}" if prompt else piped
+    if args.print_mode and not prompt:
+        console.print("[red]-p needs a prompt (argument or stdin).[/red]")
+        return 2
+
+    try:
+        config = KubrickConfig(skip_wizard=not interactive)
+    except (KeyboardInterrupt, EOFError):
+        console.print(
+            "\n[dim]Setup cancelled. Run `kubrick` again to restart it.[/dim]"
+        )
+        return 130
+    for key, value in (
+        ("provider", args.provider),
+        ("permission_mode", args.permission_mode),
+        ("tool_calling", args.tool_calling),
+        ("max_iterations", args.max_iterations),
+    ):
+        if value is not None:
+            config.override(key, value)
+    if args.model:
+        config.override(f"{config.get('provider')}_model", args.model)
+
+    conversation_id = args.conversation_id
+    if args.continue_last and not conversation_id:
+        recent = config.list_conversations(limit=1)
+        conversation_id = recent[0]["id"] if recent else None
 
     try:
         cli = KubrickCLI(
             config=config,
             working_dir=args.working_dir,
-            conversation_id=args.conversation_id,
-            provider_override=args.provider,
+            conversation_id=conversation_id,
+            print_mode=args.print_mode,
+            interactive=interactive,
         )
+    except (MissingCredentialError, ProviderError, ValueError) as e:
+        console.print(f"[red]{escape(str(e))}[/red]")
+        return 1
+    except KeyboardInterrupt:
+        return 130
 
-        cli.run()
-    except Exception as e:
-        console.print(f"[red]Failed to start Kubrick: {e}[/red]")
-        import sys
+    if args.print_mode:
+        result = cli.run_turn(prompt)
+        return 0 if result.success else 1
 
-        sys.exit(1)
+    cli.run(initial_prompt=prompt)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

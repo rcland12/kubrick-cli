@@ -1,0 +1,27 @@
+# Kubrick-compatible streaming LLM for Triton's Python backend.
+# Request parameters (streaming, temperature, max_tokens) arrive as Triton
+# request parameters (request.parameters() in model.py), not as an input tensor.
+name: "llm_decoupled"
+backend: "python"
+max_batch_size: 0
+
+# Decoupled = 0..N responses per request, which is what streaming needs.
+model_transaction_policy { decoupled: true }
+
+input [
+  {
+    name: "text_input"          # JSON list of chat messages [{"role": ..., "content": ...}]
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  }
+]
+
+output [
+  {
+    name: "text_output"         # JSON {"type": "chunk"|"complete"|"error", "content": ...}
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  }
+]
+
+instance_group [ { kind: KIND_GPU count: 1 } ]
