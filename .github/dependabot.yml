@@ -2,6 +2,8 @@ version: 2
 updates:
   - package-ecosystem: "pip"
     directory: "/"
+    # PRs go through staging (CI + TestPyPI) like any other change.
+    target-branch: "staging"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -18,6 +20,8 @@ updates:
 
   - package-ecosystem: "docker"
     directory: "/"
+    # PRs go through staging (CI + TestPyPI) like any other change.
+    target-branch: "staging"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -32,6 +36,8 @@ updates:
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    # PRs go through staging (CI + TestPyPI) like any other change.
+    target-branch: "staging"
     schedule:
       interval: "weekly"
       day: "monday"

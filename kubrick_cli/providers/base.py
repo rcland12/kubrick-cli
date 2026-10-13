@@ -1,7 +1,17 @@
 """Base provider adapter interface."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
+
+from ..messages import MessageDone, TextDelta, ToolSpec
+
+
+class ProviderError(Exception):
+    """A provider request failed in a way worth showing to the user verbatim."""
+
+
+class ToolsNotSupportedError(ProviderError):
+    """The backend rejected native tool definitions (e.g. an Ollama model without tools)."""
 
 
 class ProviderMetadata:
@@ -17,7 +27,7 @@ class ProviderMetadata:
         name: str,
         display_name: str,
         description: str,
-        config_fields: List[Dict[str, str]],
+        config_fields: List[Dict[str, Any]],
     ):
         """
         Initialize provider metadata.
@@ -27,127 +37,123 @@ class ProviderMetadata:
             display_name: Human-readable name (e.g., "Triton", "OpenAI")
             description: Brief description shown in setup wizard
             config_fields: List of configuration field definitions
-                Each field should be a dict with:
+                Each field is a dict with:
                 - key: Config key name (e.g., "openai_api_key")
                 - label: Display label (e.g., "OpenAI API key")
-                - type: Field type ("text", "password", "url")
-                - default: Default value (optional)
+                - type: Field type ("text", "secret", "url", or "model": the
+                  wizard offers the provider's ``list_models()`` as a menu)
+                - default: Default value (optional; a field with a default
+                  or ``required: False`` is optional)
+                - required: Whether a value must be provided (default True)
+                - env: Environment variables checked for the value, in order
                 - help_text: Help text or URL (optional)
+                - choices: ``[(value, description), ...]`` shown as a menu
+                - advanced: Not asked in the setup wizard (change with /config)
+
+                ``secret`` fields are stored in the credential store, never in
+                config.json.
         """
         self.name = name
         self.display_name = display_name
         self.description = description
         self.config_fields = config_fields
 
+    @property
+    def secret_fields(self) -> List[Dict[str, Any]]:
+        """Config fields that hold credentials."""
+        return [
+            f for f in self.config_fields if f.get("type") in ("secret", "password")
+        ]
+
 
 class ProviderAdapter(ABC):
     """
     Abstract base class for LLM provider adapters.
 
-    All provider implementations must inherit from this class and implement
-    the required methods for streaming and non-streaming generation.
-
-    To create a truly plug-and-play provider:
+    To create a plug-and-play provider:
     1. Inherit from ProviderAdapter
     2. Define METADATA as a class attribute with ProviderMetadata
-    3. Implement all abstract methods
-    4. Place the file in kubrick_cli/providers/ directory
+    3. Implement ``stream_chat`` and the name properties
+    4. Place the file in kubrick_cli/providers/
 
-    The provider will be automatically discovered and available in the setup wizard.
+    The provider is discovered automatically and offered in the setup wizard.
+    Constructor parameters are filled from config fields whose key equals the
+    parameter name or ends with ``_<parameter name>``.
     """
 
     METADATA: Optional[ProviderMetadata] = None
 
+    #: Whether ``stream_chat`` accepts ``tools`` and emits ToolCallEvents.
+    #: Providers without native tool calling get the text tool protocol instead.
+    supports_native_tools: bool = True
+
     @abstractmethod
-    def generate_streaming(
-        self, messages: List[Dict[str, str]], stream_options: Dict = None
-    ) -> Iterator[str]:
+    def stream_chat(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[ToolSpec]] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Iterator[Any]:
         """
-        Generate streaming response from LLM.
+        Stream one model response.
 
         Args:
-            messages: List of message dicts with 'role' and 'content'
-            stream_options: Optional streaming parameters
+            messages: Conversation in the format described in ``messages.py``
+            tools: Tools the model may call (ignored if not supported)
+            options: Generation options (``max_tokens``, ``temperature``)
 
         Yields:
-            Text chunks as they arrive
-        """
-        pass
+            TextDelta, ThinkingDelta and ToolCallEvent objects, then exactly
+            one MessageDone.
 
-    @abstractmethod
-    def generate(
-        self, messages: List[Dict[str, str]], stream_options: Dict = None
-    ) -> str:
+        Raises:
+            ProviderError: On API errors, with a message fit for display
         """
-        Generate non-streaming response from LLM.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            stream_options: Optional parameters
-
-        Returns:
-            Complete response text
-        """
-        pass
-
-    @abstractmethod
-    def is_healthy(self) -> bool:
-        """
-        Check if the provider is healthy and accessible.
-
-        Returns:
-            True if healthy, False otherwise
-        """
-        pass
 
     @property
     @abstractmethod
     def provider_name(self) -> str:
-        """
-        Get the name of this provider.
-
-        Returns:
-            Provider name (e.g., "triton", "openai", "anthropic")
-        """
-        pass
+        """Provider name (e.g., "triton", "openai", "anthropic")."""
 
     @property
     @abstractmethod
     def model_name(self) -> str:
-        """
-        Get the model name being used.
-
-        Returns:
-            Model name/identifier
-        """
-        pass
+        """Model identifier in use."""
 
     def set_model(self, model_name: str):
-        """
-        Set the model name dynamically (optional, for model switching).
+        """Switch models for subsequent requests."""
+        self._model_name = model_name
 
-        Args:
-            model_name: New model name
+    def is_healthy(self) -> bool:
+        """Cheap connectivity check run at startup."""
+        return True
 
-        Note:
-            Default implementation does nothing. Override in subclasses
-            that support model switching.
-        """
-        pass
+    def list_models(self) -> List[str]:
+        """Model identifiers the backend offers (empty if unknown)."""
+        return []
 
-    def estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
-        """
-        Estimate token count for messages.
+    def context_window(self) -> Optional[int]:
+        """Context window of the current model as reported by the backend, if known."""
+        return None
 
-        Default implementation uses TokenCounter heuristics.
-        Providers can override for more accurate counting (e.g., using tiktoken).
+    # --- Text-only conveniences used by summarization ------------------------
 
-        Args:
-            messages: List of message dicts with 'role' and 'content'
+    def generate_streaming(
+        self, messages: List[Dict[str, Any]], stream_options: Dict = None
+    ) -> Iterator[str]:
+        """Stream only the response text, without tools."""
+        for event in self.stream_chat(messages, tools=None, options=stream_options):
+            if isinstance(event, TextDelta):
+                yield event.text
 
-        Returns:
-            Estimated token count
-        """
-        from ..context_manager import TokenCounter
+    def generate(
+        self, messages: List[Dict[str, Any]], stream_options: Dict = None
+    ) -> str:
+        """Return the complete response text, without tools."""
+        return "".join(self.generate_streaming(messages, stream_options))
 
-        return TokenCounter.count_messages_tokens(messages, self.provider_name)
+    @staticmethod
+    def _done_if_missing(seen_done: bool) -> Iterator[MessageDone]:
+        """Yield a fallback MessageDone when a stream ended without one."""
+        if not seen_done:
+            yield MessageDone(stop_reason="end_turn")

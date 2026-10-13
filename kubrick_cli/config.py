@@ -5,170 +5,223 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# Keys from older versions that no longer do anything; dropped on load.
+_OBSOLETE_KEYS = {
+    "model_name",
+    "use_openai",
+    "max_tools_per_turn",
+    "total_timeout_seconds",
+    "enable_task_evaluator",
+    "evaluator_model",
+    "enable_task_classification",
+    "enable_planning_phase",
+    "display_mode",
+    "show_tool_results",
+    "show_progress",
+    "clean_display",
+    "context_windows",
+    "default_context_window",
+    "model_max_context_override",
+    "context_summarization_threshold",
+    "min_messages_to_keep",
+    "require_dangerous_command_confirmation",
+}
+
+# Secrets older versions wrote into config.json in plaintext.
+_LEGACY_SECRET_KEYS = ("openai_api_key", "anthropic_api_key")
+
 
 class KubrickConfig:
-    """Manages Kubrick configuration and data directories."""
+    """
+    Manages Kubrick configuration and data directories.
 
-    def __init__(self, skip_wizard: bool = False):
+    Values resolve in this order (highest first):
+    1. Session overrides (``override()``, e.g. from ``--model``) — never saved
+    2. ``KUBRICK_<KEY>`` environment variables (e.g. ``KUBRICK_PROVIDER``)
+    3. ``~/.kubrick/config.json``
+    4. Built-in defaults
+    """
+
+    def __init__(self, skip_wizard: bool = False, kubrick_dir: Optional[Path] = None):
         """
         Initialize config manager and ensure directories exist.
 
         Args:
-            skip_wizard: Skip setup wizard even if config doesn't exist (for testing)
+            skip_wizard: Skip setup wizard even if config doesn't exist (for tests
+                and non-interactive use)
+            kubrick_dir: Override the data directory (default ``~/.kubrick``,
+                or ``$KUBRICK_HOME``)
         """
-        # Use ~/.kubrick in all environments (Docker and non-Docker)
-        # In Docker, this resolves to /home/kubrick/.kubrick
-        # Outside Docker, this resolves to the current user's home directory
-        home_env = os.environ.get("HOME")
-        if home_env:
-            self.kubrick_dir = Path(home_env).expanduser() / ".kubrick"
-        else:
-            self.kubrick_dir = Path.home() / ".kubrick"
+        if kubrick_dir is None:
+            env_dir = os.environ.get("KUBRICK_HOME")
+            if env_dir:
+                kubrick_dir = Path(env_dir).expanduser()
+            else:
+                home = os.environ.get("HOME")
+                kubrick_dir = (
+                    Path(home).expanduser() if home else Path.home()
+                ) / ".kubrick"
+        self.kubrick_dir = Path(kubrick_dir)
 
         self.config_file = self.kubrick_dir / "config.json"
         self.conversations_dir = self.kubrick_dir / "conversations"
+        self._overrides: Dict[str, Any] = {}
+        self._credentials = None
 
         self._ensure_directories()
 
+        self.first_run = not self.config_file.exists()
         self.config = self._load_config(skip_wizard=skip_wizard)
 
     def _ensure_directories(self):
         """Create necessary directories if they don't exist."""
-        self.kubrick_dir.mkdir(exist_ok=True)
+        self.kubrick_dir.mkdir(parents=True, exist_ok=True)
         self.conversations_dir.mkdir(exist_ok=True)
+        try:
+            os.chmod(self.kubrick_dir, 0o700)
+        except OSError:
+            pass
 
     def _load_config(self, skip_wizard: bool = False) -> Dict[str, Any]:
-        """
-        Load configuration from file or create default.
+        """Load configuration from file, running the setup wizard on first launch."""
+        config = self._get_default_config()
 
-        Args:
-            skip_wizard: Skip setup wizard even if config doesn't exist
-
-        Returns:
-            Configuration dictionary
-        """
         if self.config_file.exists():
             try:
                 with open(self.config_file, "r") as f:
-                    loaded_config = json.load(f)
-
-                default_config = self._get_default_config()
-                default_config.update(loaded_config)
-                return default_config
-
+                    loaded = json.load(f)
             except (json.JSONDecodeError, IOError):
-                return self._get_default_config()
-        else:
-            if not skip_wizard:
-                from .setup_wizard import SetupWizard
-
-                wizard_config = SetupWizard.run()
-
-                config = self._get_default_config()
-                config.update(wizard_config)
-
+                loaded = {}
+            legacy_secrets = {
+                k: loaded.pop(k) for k in _LEGACY_SECRET_KEYS if loaded.get(k)
+            }
+            dirty = bool(legacy_secrets) or any(k in loaded for k in _OBSOLETE_KEYS)
+            for key in _OBSOLETE_KEYS:
+                loaded.pop(key, None)
+            for key in _LEGACY_SECRET_KEYS:
+                loaded.pop(key, None)
+            config.update(loaded)
+            self.config = config
+            if legacy_secrets:
+                self._migrate_legacy_secrets(legacy_secrets)
+            if dirty:
                 self._save_config(config)
-                return config
-            else:
-                config = self._get_default_config()
-                self._save_config(config)
-                return config
+            return config
+
+        self.config = config
+        # Configured entirely through the environment (CI, Docker): no wizard needed.
+        if not skip_wizard and not os.environ.get("KUBRICK_PROVIDER"):
+            from .setup_wizard import SetupWizard
+
+            config.update(SetupWizard.run(self))
+        self._save_config(config)
+        return config
+
+    def _migrate_legacy_secrets(self, secrets: Dict[str, str]):
+        """Move plaintext API keys from config.json into the credential store."""
+        try:
+            for key, value in secrets.items():
+                self.credentials.set(key, value)
+            print(
+                f"Moved {len(secrets)} API key(s) from config.json into the "
+                f"{self.credentials.backend_name} credential store."
+            )
+        except Exception as e:
+            print(f"Warning: could not migrate API keys to the credential store: {e}")
 
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration values."""
         return {
-            # Provider settings
-            "provider": "triton",
-            # Triton settings
-            "triton_url": "localhost:8000",
-            "triton_model": "llm_decoupled",
-            # OpenAI settings
-            "openai_api_key": None,
-            "openai_model": "gpt-4",
-            # Anthropic settings
-            "anthropic_api_key": None,
-            "anthropic_model": "claude-sonnet-4-5-20250929",
-            # Legacy compatibility
-            "model_name": "llm_decoupled",
-            "use_openai": False,
-            "default_working_dir": None,
-            # Agent loop settings
-            "max_iterations": 15,
-            "max_tools_per_turn": 5,
-            "total_timeout_seconds": 600,
+            # Active provider (see `kubrick auth status` / setup wizard)
+            "provider": "openai_compatible",
+            # Provider settings live under <provider>_<field> keys; defaults come
+            # from each provider's METADATA, so only non-provider settings are here.
+            # Agent loop
+            "max_iterations": 50,
+            "tool_calling": "auto",  # auto | native | text
             "enable_parallel_tools": True,
-            "max_parallel_workers": 3,
-            # Task evaluator settings (intelligent completion detection)
-            "enable_task_evaluator": False,  # DISABLED - causes interference with tool calling
-            "evaluator_model": None,  # Use fast model if available, else main model
-            # Safety settings
-            "require_dangerous_command_confirmation": True,
-            "tool_timeout_seconds": 30,
+            "max_parallel_workers": 4,
+            # Permissions: default (ask for edits + commands), accept_edits, bypass
+            "permission_mode": "default",
+            "tool_timeout_seconds": 120,
             "max_file_size_mb": 10,
-            # Display settings
-            "display_mode": "natural",
-            "show_tool_results": True,
-            "show_progress": True,
-            "clean_display": True,  # Suppress raw JSON tool calls (recommended)
-            # Task classification settings
-            "enable_task_classification": True,
-            "enable_planning_phase": True,
-            # Conversation settings
+            # Credentials
+            "credential_store": "auto",  # auto | keyring | file
+            "credential_max_age_days": None,  # e.g. 90 to force periodic re-auth
+            # Context management
+            "enable_context_management": True,
+            "context_window": None,  # tokens; overrides what the provider reports
+            "context_usage_threshold": 0.8,  # compact at 80% of the window
+            "max_output_tokens": None,  # per response; None = provider default
+            "max_tool_result_chars": 30000,
+            # Display
+            "show_thinking": True,
+            "editing_mode": "emacs",  # emacs | vi key bindings in the input box
+            # Look for new releases once a day (shown at startup; never auto-installs)
+            "check_for_updates": True,
+            # Conversations
             "auto_save_conversations": True,
             "max_conversations": 100,
-            # Context Management Settings
-            "enable_context_management": True,
-            "context_usage_threshold": 0.75,  # Start trimming at 75%
-            "context_summarization_threshold": 0.85,  # Summarize at 85%
-            "min_messages_to_keep": 4,  # Always preserve last 4 messages
-            "max_tool_result_chars": 10000,  # 10K chars per tool result
-            # Model-specific context windows (tokens)
-            "context_windows": {
-                # OpenAI models (most modern deployments support 128k for gpt-4)
-                "gpt-4": 128000,  # Modern GPT-4 (originally 8k, but 128k now standard)
-                "gpt-4-32k": 32768,
-                "gpt-4-turbo": 128000,
-                "gpt-4-turbo-preview": 128000,
-                "gpt-4o": 128000,
-                "gpt-4o-mini": 128000,
-                "gpt-3.5-turbo": 16385,
-                "gpt-3.5-turbo-16k": 16385,
-                # Anthropic models
-                "claude-sonnet-4-5-20250929": 200000,
-                "claude-opus-4-1-20250805": 200000,
-                "claude-haiku-4-5-20251001": 200000,
-                "claude-3-5-sonnet-20241022": 200000,
-                "claude-3-opus-20240229": 200000,
-                "claude-3-sonnet-20240229": 200000,
-                "claude-3-haiku-20240307": 200000,
-                # Triton/vLLM (conservative defaults)
-                "llm_decoupled": 32768,
-            },
-            "default_context_window": 16385,  # Fallback for unknown models
-            # Override for actual model max_model_len if different from defaults
-            # Set this to match your vLLM --max-model-len parameter
-            "model_max_context_override": None,  # e.g., 16000 for 16k context
-            # Maximum output tokens to reserve for generation
-            "max_output_tokens": 2048,  # Reserve tokens for LLM output
         }
 
     def _save_config(self, config: Dict[str, Any]):
         """Save configuration to file."""
-        with open(self.config_file, "w") as f:
+        tmp = self.config_file.with_suffix(".json.tmp")
+        with open(tmp, "w") as f:
             json.dump(config, f, indent=2)
+        os.replace(tmp, self.config_file)
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Get a configuration value."""
+        """Get a configuration value (session override > env > file > default)."""
+        if key in self._overrides:
+            return self._overrides[key]
+        env_value = os.environ.get(f"KUBRICK_{key.upper()}")
+        if env_value is not None:
+            return _coerce(env_value)
         return self.config.get(key, default)
 
     def set(self, key: str, value: Any):
-        """Set a configuration value and save."""
+        """Set a configuration value and save it to config.json."""
         self.config[key] = value
+        self._overrides.pop(key, None)
         self._save_config(self.config)
 
+    def override(self, key: str, value: Any):
+        """Set a value for this session only (not saved)."""
+        self._overrides[key] = value
+
     def get_all(self) -> Dict[str, Any]:
-        """Get all configuration values."""
-        return self.config.copy()
+        """All effective configuration values (secrets are never in here)."""
+        merged = dict(self.config)
+        for key in list(merged):
+            merged[key] = self.get(key)
+        merged.update(self._overrides)
+        return merged
+
+    # --- Credentials ---------------------------------------------------------
+
+    @property
+    def credentials(self):
+        """The credential store (created on first use)."""
+        if self._credentials is None:
+            from .credentials import CredentialStore
+
+            self._credentials = CredentialStore(
+                self.kubrick_dir,
+                backend=self.get("credential_store", "auto"),
+                max_age_days=self.get("credential_max_age_days"),
+            )
+        return self._credentials
+
+    def get_secret(self, key: str, env_vars=()) -> Optional[str]:
+        """Resolve a secret from environment variables, then the credential store."""
+        for name in env_vars:
+            value = os.environ.get(name)
+            if value:
+                return value
+        return self.credentials.get(key)
+
+    # --- Conversations -------------------------------------------------------
 
     def save_conversation(
         self, conversation_id: str, messages: list, metadata: Dict = None
@@ -179,7 +232,7 @@ class KubrickConfig:
         Args:
             conversation_id: Unique identifier for the conversation (e.g., timestamp)
             messages: List of message dictionaries
-            metadata: Optional metadata (working_dir, triton_url, etc.)
+            metadata: Optional metadata (working_dir, provider, etc.)
         """
         conversation_file = self.conversations_dir / f"{conversation_id}.json"
 
@@ -280,7 +333,7 @@ class KubrickConfig:
 
     def _cleanup_old_conversations(self):
         """Remove oldest conversations if we exceed max_conversations."""
-        max_conversations = self.config.get("max_conversations", 100)
+        max_conversations = self.get("max_conversations", 100)
 
         conversations = list(self.conversations_dir.glob("*.json"))
 
@@ -289,3 +342,11 @@ class KubrickConfig:
 
             for conv_file in conversations[: len(conversations) - max_conversations]:
                 conv_file.unlink()
+
+
+def _coerce(value: str) -> Any:
+    """Interpret an environment string as JSON when possible (numbers, bools, null)."""
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return value

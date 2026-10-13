@@ -25,20 +25,17 @@ jobs:
           pip install black flake8 bandit
       - name: Run Black (code formatter check)
         run: black --check .
-        continue-on-error: true
       - name: Run Flake8 (style check)
-        run: flake8 kubrick_cli --max-line-length=100 --extend-ignore=E203,W503
-        continue-on-error: true
+        run: flake8 kubrick_cli tests --max-line-length=100 --extend-ignore=E203,W503
       - name: Run Bandit (security check)
         run: bandit -r kubrick_cli -ll
-        continue-on-error: true
 
   test:
     name: Test on Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -83,7 +80,7 @@ jobs:
       - name: Check package
         run: twine check dist/*
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: dist-packages
           path: dist/

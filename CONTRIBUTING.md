@@ -38,18 +38,31 @@ git clone https://github.com/rcland12/kubrick-cli.git
 cd kubrick-cli
 ```
 
-2. **Create a virtual environment**
+2. **Create the dev environment**
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+make dev    # creates .venv (with uv) and installs Kubrick editable with all extras
 ```
 
-3. **Install in development mode**
+Everything stays inside the repo: `.venv/` for packages and `.dev/` for the dev run's
+config, keys, history, and playground project. `make reset` deletes both. Without `make`
+or `uv`: `python -m venv .venv && .venv/bin/pip install -e ".[dev,all]"`.
+
+3. **Try your changes**
 
 ```bash
-pip install -e ".[dev]"
+make run                         # throwaway playground copy of examples/playground
+make run DIR=~/src/some-project  # a real project
+make run ARGS="-p 'hi'"          # pass flags
+make sandbox                     # same, inside Docker
 ```
+
+`make run` uses `.dev/home` instead of `~/.kubrick`, so the setup wizard runs the first
+time; `make reset-home` brings it back. Commands the agent runs inherit the venv, so a
+`pip install` lands in `.venv`, not your system. For full isolation, `make sandbox` runs
+Kubrick in a container that can only see the project directory (Kubrick's source is
+mounted read-only, so edits apply without a rebuild). `make playground` restores the
+playground's original bugs.
 
 4. **Install pre-commit hooks** (recommended)
 
@@ -64,7 +77,8 @@ This will run automated checks before each commit.
 
 ### Branch Strategy
 
-- `master`: Production-ready code, protected branch, triggers PyPI and Docker Hub releases
+- `master`: Production-ready code, protected branch. A merge that changes `version` in
+  `pyproject.toml` releases to PyPI, Docker Hub, and GHCR
 - `staging`: Main development branch, automatically publishes to Test PyPI for validation
 - `feature/*`: Feature branches (branched from staging)
 - `bugfix/*`: Bug fix branches (branched from staging)
@@ -111,15 +125,15 @@ Then create a PR from your branch to `staging`.
 
 5. **Validate from Test PyPI** (after merging to staging)
 
-Once your feature is merged to `staging`, it's automatically published to Test PyPI. You can validate it works:
+Once your feature is merged to `staging`, it's published to Test PyPI if its version isn't
+there yet (uploads use `skip-existing`, so bump the version first). Validate it in a
+throwaway environment:
 
 ```bash
-# Install from Test PyPI
-pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ kubrick-cli
-
-# Test your changes
-kubrick --version
-kubrick --help
+uv venv /tmp/kubrick-rc
+uv pip install --python /tmp/kubrick-rc/bin/python --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ kubrick-cli==X.Y.Z
+/tmp/kubrick-rc/bin/kubrick --version
 ```
 
 This ensures the package works correctly before releasing to production PyPI.
@@ -129,9 +143,8 @@ This ensures the package works correctly before releasing to production PyPI.
 ### Style Guidelines
 
 - Follow PEP 8 style guide
-- Use Black for code formatting
-- Maximum line length: 100 characters
-- Use type hints where appropriate
+- Black formats the code (default 88 columns); flake8 allows up to 100
+- Use type hints, in Python 3.9-compatible syntax (`Optional[X]`, not `X | None`)
 
 ### Pre-commit Checks
 
@@ -140,20 +153,14 @@ The project uses pre-commit hooks that run automatically:
 - **Black**: Code formatting
 - **Flake8**: Style checking
 - **Bandit**: Security scanning
-- **MyPy**: Type checking
 - File validators (trailing whitespace, etc.)
 
 ### Manual Formatting
 
 ```bash
-# Format code
-black .
-
-# Check style
-flake8 kubrick_cli --max-line-length=100 --extend-ignore=E203,W503
-
-# Security check
-bandit -r kubrick_cli -ll
+make fmt                          # black
+make lint                         # black --check + flake8, as CI runs them
+bandit -r kubrick_cli -ll         # security check (also in CI)
 ```
 
 ## Testing
@@ -288,20 +295,15 @@ git add pyproject.toml
 git commit -m "chore: bump version to 0.1.2"
 ```
 
-3. **Merge to master**
-
-```bash
-git checkout master
-git merge staging
-git push origin master
-```
+3. **Merge to master** by opening a pull request from `staging` to `master` (master is
+   protected)
 
 **That's it!** The CD workflow automatically:
 
 - Detects the version change
 - Runs tests
 - Publishes to PyPI
-- Builds and pushes Docker image
+- Builds and pushes multi-arch Docker images to Docker Hub and GHCR
 - Creates git tag (v0.1.2)
 - Creates GitHub release with changelog
 
@@ -324,7 +326,9 @@ kubrick-cli/
 ├── .github/
 │   ├── workflows/          # CI/CD pipelines
 │   └── dependabot.yml      # Dependency updates
+├── docker/                 # Dev sandbox image (make sandbox)
 ├── docs/                   # Documentation
+├── examples/               # Playground project, Triton model example
 ├── kubrick_cli/            # Main package
 │   ├── providers/          # LLM provider adapters
 │   ├── __init__.py
@@ -333,8 +337,10 @@ kubrick-cli/
 │   └── ...
 ├── scripts/                # Helper scripts
 ├── tests/                  # Test files
+├── Makefile                # Dev tasks: make dev/run/test/lint/sandbox/reset
 ├── pyproject.toml          # Project configuration
-├── Dockerfile              # Docker configuration
+├── Dockerfile              # Release image
+├── docker-compose.yaml
 └── README.md
 ```
 
@@ -348,7 +354,6 @@ kubrick-cli/
 
 Contributors will be recognized in:
 
-- README.md contributors section
 - Release notes
 - GitHub contributors page
 

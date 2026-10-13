@@ -292,3 +292,17 @@ class TestSafetyManager:
         is_within = safety_manager.check_tool_limit(5, 5)
 
         assert is_within is True
+
+
+def test_flags_system_package_installs():
+    manager = SafetyManager(SafetyConfig())
+    assert not manager.validate_bash_command("pip install x --break-system-packages")[0]
+    assert not manager.validate_bash_command("npm install -g left-pad")[0]
+    assert manager.validate_bash_command("pip install -e .")[0]
+
+
+def test_dev_null_redirect_is_not_a_device_write():
+    manager = SafetyManager(SafetyConfig())
+    assert manager.validate_bash_command("ls missing 2>/dev/null")[0]
+    assert manager.validate_bash_command("cmd >/dev/null 2>&1")[0]
+    assert not manager.validate_bash_command("echo x > /dev/sda")[0]

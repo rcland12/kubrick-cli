@@ -4,17 +4,35 @@ import importlib
 import inspect
 import pkgutil
 from pathlib import Path
-from typing import Dict, List, Type
+from typing import Any, Callable, Dict, List, Optional, Type
 
 from .base import ProviderAdapter, ProviderMetadata
+
+
+class MissingCredentialError(ValueError):
+    """A required secret (API key) is not configured."""
+
+    def __init__(self, provider: str, field: Dict[str, Any]):
+        self.provider = provider
+        self.field = field
+        env = ", ".join(field.get("env", []))
+        hint = f" or set {env}" if env else ""
+        super().__init__(
+            f"No {field['label']} configured. Run `kubrick auth login {provider}`{hint}."
+        )
+
+
+def is_required(field: Dict[str, Any]) -> bool:
+    """Whether a config field must have a value."""
+    return field.get("required", "default" not in field)
 
 
 class ProviderFactory:
     """
     Factory for creating provider adapter instances with automatic discovery.
 
-    This factory automatically discovers all provider classes in the providers
-    directory that inherit from ProviderAdapter and have METADATA defined.
+    Any class in this package that inherits from ProviderAdapter and defines
+    METADATA is registered under ``METADATA.name``.
     """
 
     _provider_registry: Dict[str, Type[ProviderAdapter]] = {}
@@ -22,14 +40,7 @@ class ProviderFactory:
 
     @classmethod
     def _discover_providers(cls):
-        """
-        Discover all provider classes in the providers directory.
-
-        This method scans the providers package for classes that:
-        1. Inherit from ProviderAdapter
-        2. Are not the base ProviderAdapter class itself
-        3. Have a METADATA attribute defined
-        """
+        """Import every module in the providers package and register adapters."""
         if cls._discovered:
             return
 
@@ -38,124 +49,144 @@ class ProviderFactory:
         for module_info in pkgutil.iter_modules([str(providers_dir)]):
             module_name = module_info.name
 
-            if module_name in ("base", "factory", "__init__"):
+            if module_name in ("base", "factory", "http", "__init__"):
                 continue
 
             try:
                 module = importlib.import_module(f"kubrick_cli.providers.{module_name}")
-
-                for name, obj in inspect.getmembers(module, inspect.isclass):
-                    if (
-                        issubclass(obj, ProviderAdapter)
-                        and obj is not ProviderAdapter
-                        and hasattr(obj, "METADATA")
-                        and obj.METADATA is not None
-                    ):
-                        provider_name = obj.METADATA.name.lower()
-                        cls._provider_registry[provider_name] = obj
-
             except Exception as e:
                 print(f"Warning: Failed to load provider from {module_name}: {e}")
                 continue
 
+            for _, obj in inspect.getmembers(module, inspect.isclass):
+                if (
+                    issubclass(obj, ProviderAdapter)
+                    and obj is not ProviderAdapter
+                    and obj.__dict__.get("METADATA") is not None
+                ):
+                    cls._provider_registry[obj.METADATA.name.lower()] = obj
+
         cls._discovered = True
 
     @classmethod
-    def create_provider(cls, config: Dict) -> ProviderAdapter:
+    def resolve_settings(
+        cls,
+        config,
+        provider_name: str,
+        prompt_secret: Optional[Callable[[str, Dict[str, Any]], Optional[str]]] = None,
+    ) -> Dict[str, Any]:
         """
-        Create a provider instance based on configuration.
+        Resolve every config field of a provider to a value.
 
         Args:
-            config: Configuration dictionary containing provider settings
+            config: KubrickConfig
+            provider_name: Provider to resolve
+            prompt_secret: Called as ``prompt_secret(provider, field)`` when a
+                required secret is missing; a returned value is saved to the
+                credential store. If None, a missing secret raises.
+
+        Raises:
+            MissingCredentialError: A required secret is missing
+            ValueError: Unknown provider or a required setting is missing
+        """
+        metadata = cls.get_provider_metadata(provider_name)
+        values: Dict[str, Any] = {}
+        for field in metadata.config_fields:
+            key = field["key"]
+            if field.get("type") in ("secret", "password"):
+                value = config.get_secret(key, field.get("env", []))
+                if not value and is_required(field):
+                    if prompt_secret is None:
+                        raise MissingCredentialError(metadata.name, field)
+                    value = prompt_secret(metadata.name, field)
+                    if not value:
+                        raise MissingCredentialError(metadata.name, field)
+                    config.credentials.set(key, value)
+            else:
+                value = config.get(key)
+                if value in (None, ""):
+                    value = field.get("default")
+                if value in (None, "") and is_required(field):
+                    raise ValueError(
+                        f"{metadata.display_name} setting '{key}' is not configured. "
+                        f"Run `kubrick setup` or `/config {key} <value>`."
+                    )
+            values[key] = value
+        return values
+
+    @classmethod
+    def create_provider(
+        cls,
+        config,
+        provider_name: Optional[str] = None,
+        prompt_secret: Optional[Callable[[str, Dict[str, Any]], Optional[str]]] = None,
+    ) -> ProviderAdapter:
+        """
+        Create a provider instance from configuration.
+
+        Args:
+            config: KubrickConfig
+            provider_name: Provider to create (default: the configured provider)
+            prompt_secret: See ``resolve_settings``
 
         Returns:
             ProviderAdapter instance
-
-        Raises:
-            ValueError: If provider is invalid or required credentials are missing
         """
         cls._discover_providers()
-
-        provider_name = config.get("provider", "triton").lower()
-
+        provider_name = (provider_name or config.get("provider") or "").lower()
         if provider_name not in cls._provider_registry:
-            available = ", ".join(cls._provider_registry.keys())
+            available = ", ".join(sorted(cls._provider_registry))
             raise ValueError(
-                f"Unknown provider: {provider_name}. "
-                f"Available providers: {available}"
+                f"Unknown provider: {provider_name!r}. Available: {available}"
             )
 
-        provider_class = cls._provider_registry[provider_name]
-        metadata = provider_class.METADATA
+        settings = cls.resolve_settings(config, provider_name, prompt_secret)
+        return cls.instantiate(provider_name, settings)
 
-        provider_config = {}
-        for field in metadata.config_fields:
-            key = field["key"]
-            value = config.get(key)
-
-            if value is None and "default" not in field:
-                raise ValueError(
-                    f"{metadata.display_name} configuration missing required field: '{key}'. "
-                    f"Please run setup wizard or add '{key}' to config."
-                )
-
-            provider_config[key] = value if value is not None else field.get("default")
-
-        init_signature = inspect.signature(provider_class.__init__)
+    @classmethod
+    def instantiate(
+        cls, provider_name: str, settings: Dict[str, Any]
+    ) -> ProviderAdapter:
+        """Build a provider from already-resolved field values (keyed like config)."""
+        cls._discover_providers()
+        provider_class = cls._provider_registry[provider_name.lower()]
         init_params = {}
-
-        for param_name, param in init_signature.parameters.items():
+        for param_name in inspect.signature(provider_class.__init__).parameters:
             if param_name == "self":
                 continue
-
-            for field in metadata.config_fields:
-                if field["key"] == param_name or field["key"].endswith(
-                    f"_{param_name}"
-                ):
-                    init_params[param_name] = provider_config[field["key"]]
+            for key, value in settings.items():
+                if key == param_name or key.endswith(f"_{param_name}"):
+                    init_params[param_name] = value
                     break
 
         return provider_class(**init_params)
 
     @classmethod
     def list_available_providers(cls) -> List[ProviderMetadata]:
-        """
-        Get list of available providers with their metadata.
-
-        Returns:
-            List of ProviderMetadata objects
-        """
+        """All discovered providers, local-first."""
         cls._discover_providers()
-
-        providers = []
-        for provider_class in cls._provider_registry.values():
-            if provider_class.METADATA:
-                providers.append(provider_class.METADATA)
-
-        def sort_key(p):
-            return (0, "") if p.name == "triton" else (1, p.name)
-
-        providers.sort(key=sort_key)
+        order = ["openai_compatible", "anthropic", "openai", "bedrock", "triton"]
+        providers = [p.METADATA for p in cls._provider_registry.values()]
+        providers.sort(
+            key=lambda p: (order.index(p.name) if p.name in order else 99, p.name)
+        )
         return providers
+
+    @classmethod
+    def provider_names(cls) -> List[str]:
+        """Names of all discovered providers."""
+        return [p.name for p in cls.list_available_providers()]
 
     @classmethod
     def get_provider_metadata(cls, provider_name: str) -> ProviderMetadata:
         """
         Get metadata for a specific provider.
 
-        Args:
-            provider_name: Name of the provider
-
-        Returns:
-            ProviderMetadata object
-
         Raises:
             ValueError: If provider not found
         """
         cls._discover_providers()
-
         provider_name = provider_name.lower()
         if provider_name not in cls._provider_registry:
             raise ValueError(f"Provider not found: {provider_name}")
-
         return cls._provider_registry[provider_name].METADATA
