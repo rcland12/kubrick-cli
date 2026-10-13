@@ -135,6 +135,10 @@ is now provider-agnostic and tuned for local models.
   - GitHub Actions bumped: `actions/upload-artifact` v7, `docker/setup-buildx-action`
     v4, `docker/build-push-action` v7
   - Dependabot now opens its PRs against `staging`
+  - the test job runs on `ubuntu-24.04`, because `ubuntu-latest` moves to Ubuntu 26.04
+    on 2026-10-19 and there is no Python 3.9 build for it
+  - Codecov action v7 with the `files` input (the old `file` input was ignored), and
+    the `CODECOV_TOKEN` secret passed when set
 - **Requirements**: Python 3.9 or newer, and `cryptography` is now a dependency.
 
 ### Removed

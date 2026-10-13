@@ -17,7 +17,8 @@ Four GitHub Actions workflows live in `.github/workflows/`. Releases are driven 
 1. **Lint** (blocking): `black --check .`, `flake8 kubrick_cli tests
    --max-line-length=100 --extend-ignore=E203,W503`, `bandit -r kubrick_cli -ll`.
 2. **Test**: `pytest` with coverage on Python 3.9, 3.10, 3.11, 3.12, 3.13 (Ubuntu).
-   Coverage is uploaded to Codecov from 3.11 (non-blocking, no token needed).
+   Coverage is uploaded to Codecov from 3.11 (non-blocking). Uses `CODECOV_TOKEN` if set;
+   the repo must be activated in Codecov (Configuration → General) for reports to process.
 3. **Build**: `python -m build` + `twine check`, artifacts kept for 7 days.
 4. **Publish to TestPyPI**: only on pushes to `staging`, using `TEST_PYPI_API_TOKEN`, with
    `skip-existing`: a version already on TestPyPI is not re-uploaded, so bump the version
@@ -50,6 +51,7 @@ both succeed.
 | `PYPI_API_TOKEN` | `cd.yml` (PyPI) |
 | `TEST_PYPI_API_TOKEN` | `ci.yml` (TestPyPI, `staging` only) |
 | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` | `cd.yml` (Docker Hub) |
+| `CODECOV_TOKEN` | `ci.yml` coverage upload (optional but recommended) |
 | `SEMGREP_APP_TOKEN` | `security.yml` (optional) |
 
 `GITHUB_TOKEN` is provided automatically.
