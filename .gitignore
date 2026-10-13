@@ -15,3 +15,6 @@ build/
 .env
 .env.*
 !.env.example
+
+# Scratch logs / notes
+*.log
