@@ -1,4 +1,4 @@
-# Kubrick CLI
+# <img src="https://raw.githubusercontent.com/rcland12/kubrick-cli/master/docs/images/logo.svg" alt="" width="34" align="top"> Kubrick CLI
 
 [![CI](https://github.com/rcland12/kubrick-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/rcland12/kubrick-cli/actions/workflows/ci.yml)
 [![CD](https://github.com/rcland12/kubrick-cli/actions/workflows/cd.yml/badge.svg)](https://github.com/rcland12/kubrick-cli/actions/workflows/cd.yml)

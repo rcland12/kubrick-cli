@@ -126,6 +126,8 @@ is now provider-agnostic and tuned for local models.
   (local models often do that).
 - **Default provider** is `openai_compatible`. Setting `KUBRICK_PROVIDER` skips the setup
   wizard.
+- **Logo**: `docs/images/logo.svg` (vector, under 1 KB) and `logo.png` (512 px), shown
+  next to the README title, and a 1280×640 `social-preview.png` for GitHub link previews.
 - **Docs**:
   - `docs/CICD.md` and `docs/TESTING.md` rewritten to match the workflows (release on a
     version bump reaching `master`; TestPyPI from `staging`)

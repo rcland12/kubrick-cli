@@ -67,9 +67,11 @@ def test_expiry(tmp_path, monkeypatch):
 
 def test_delete(store):
     store.set("k", "v")
-    assert store.delete("k") is True
+    deleted = store.delete("k")
+    assert deleted is True
     assert store.get("k") is None
-    assert store.delete("k") is False
+    deleted_again = store.delete("k")
+    assert deleted_again is False
 
 
 def test_hkdf_matches_rfc5869_vector():
