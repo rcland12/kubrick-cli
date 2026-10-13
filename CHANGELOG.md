@@ -1,5 +1,14 @@
 # Kubrick CLI Changelog
 
+## Unreleased
+
+### Changed
+
+- **CI**:
+  - `docker/login-action` v4 and `docker/metadata-action` v6 in the release workflow
+  - Dependabot uses `versioning-strategy: increase-if-necessary` for pip, so it no
+    longer raises minimum dependency versions (which would have dropped Python 3.9)
+
 ## Version 0.2.0
 
 A rewrite of the core around native tool calling and a Claude Code-style agent loop. Kubrick

@@ -2,6 +2,9 @@ version: 2
 updates:
   - package-ecosystem: "pip"
     directory: "/"
+    # Kubrick is a published tool with ">=" ranges: only widen a range when a new release
+    # falls outside it, never raise minimums (that breaks users' environments and 3.9).
+    versioning-strategy: "increase-if-necessary"
     # PRs go through staging (CI + TestPyPI) like any other change.
     target-branch: "staging"
     schedule:
