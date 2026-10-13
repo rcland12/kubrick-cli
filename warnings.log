@@ -1,5 +1,0 @@
-Test on Python 3.11
-Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
-
-Test on Python 3.11
-Unexpected input(s) 'file', valid inputs are ['base_sha', 'binary', 'codecov_yml_path', 'commit_parent', 'directory', 'disable_file_fixes', 'disable_search', 'disable_safe_directory', 'disable_telem', 'dry_run', 'env_vars', 'exclude', 'fail_ci_if_error', 'files', 'flags', 'force', 'git_service', 'gcov_args', 'gcov_executable', 'gcov_ignore', 'gcov_include', 'handle_no_reports_found', 'job_code', 'name', 'network_filter', 'network_prefix', 'os', 'override_branch', 'override_build', 'override_build_url', 'override_commit', 'override_pr', 'plugins', 'recurse_submodules', 'report_code', 'report_type', 'root_dir', 'run_command', 'skip_validation', 'slug', 'swift_project', 'token', 'url', 'use_legacy_upload_endpoint', 'use_oidc', 'use_pypi', 'verbose', 'version', 'working-directory']
