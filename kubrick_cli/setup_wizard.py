@@ -563,7 +563,6 @@ def _bedrock_status(config) -> str:
     """Where Bedrock credentials come from, with expiry when known."""
     if config.get("bedrock_profile"):
         return f"AWS profile {config.get('bedrock_profile')}"
-    values, where = {}, ""
     if config.get("bedrock_credentials_file"):
         where = f"file {config.get('bedrock_credentials_file')}"
         values = awscreds.load_env_file(config.get("bedrock_credentials_file"))

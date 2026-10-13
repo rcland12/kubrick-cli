@@ -38,8 +38,10 @@ def render_tools_prompt(tools: List[ToolSpec]) -> str:
         '{"tool": "read_file", "parameters": {"file_path": "src/app.py"}}',
         "```",
         "",
-        "After your tool calls, stop and wait: the results arrive in the next message. "
-        "When the task is done, reply normally without any tool_call block.",
+        (
+            "After your tool calls, stop and wait: the results arrive in the next message. "
+            "When the task is done, reply normally without any tool_call block."
+        ),
         "",
         "## Available tools",
         "",

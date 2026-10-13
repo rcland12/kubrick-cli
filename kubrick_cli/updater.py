@@ -199,14 +199,14 @@ def refresh_in_background(
         if time.time() - path.stat().st_mtime < max_age:
             return None
     except OSError:
-        pass
+        pass  # no cache yet: check now
 
     def run():
         latest = fetch()
         try:
             path.write_text(json.dumps({"latest": latest, "checked_at": time.time()}))
         except OSError:
-            pass
+            pass  # read-only home: just check again next time
 
     thread = threading.Thread(target=run, name="kubrick-update-check", daemon=True)
     thread.start()
@@ -276,7 +276,7 @@ def run_update(
     if confirm is not None and not confirm(f"Run `{command}`?"):
         console.print(f"[dim]Skipped. To update later: {escape(command)}[/dim]")
         return 0
-    runner = runner or (lambda cmd: subprocess.call(cmd))  # nosec B603
+    runner = runner or subprocess.call  # nosec B603
     code = runner(install.command)
     if code == 0:
         now = (installed or installed_version)()

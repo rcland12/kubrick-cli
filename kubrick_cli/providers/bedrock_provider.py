@@ -737,7 +737,7 @@ class BedrockProvider(ProviderAdapter):
                 if profile.get("inferenceProfileId"):
                     models.add(profile["inferenceProfileId"])
         except Exception:
-            pass
+            pass  # listing is best effort (missing permission); foundation models below
         try:
             summaries = control.list_foundation_models(
                 byOutputModality="TEXT", byInferenceType="ON_DEMAND"
@@ -746,7 +746,7 @@ class BedrockProvider(ProviderAdapter):
                 if summary.get("responseStreamingSupported") and summary.get("modelId"):
                     models.add(summary["modelId"])
         except Exception:
-            pass
+            pass  # best effort; the user can still type a model ID
         return sorted(models)
 
     @property

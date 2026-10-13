@@ -80,7 +80,7 @@ class KubrickConfig:
         try:
             os.chmod(self.kubrick_dir, 0o700)
         except OSError:
-            pass
+            pass  # best effort (Windows, shared mounts); secrets are encrypted regardless
 
     def _load_config(self, skip_wizard: bool = False) -> Dict[str, Any]:
         """Load configuration from file, running the setup wizard on first launch."""

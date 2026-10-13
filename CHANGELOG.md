@@ -136,6 +136,7 @@ is now provider-agnostic and tuned for local models.
     v4, `docker/build-push-action` v7
   - Dependabot now opens its PRs against `staging`
   - Security Scanning can be run by hand from the Actions tab (`workflow_dispatch`)
+  - addressed the CodeQL code-quality findings (no security findings)
   - the test job runs on `ubuntu-24.04`, because `ubuntu-latest` moves to Ubuntu 26.04
     on 2026-10-19 and there is no Python 3.9 build for it
   - Codecov action v7 with the `files` input (the old `file` input was ignored), and

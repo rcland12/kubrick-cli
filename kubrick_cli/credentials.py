@@ -92,7 +92,7 @@ def machine_id() -> str:
             ) as key:
                 return str(winreg.QueryValueEx(key, "MachineGuid")[0])
     except Exception:
-        pass
+        pass  # no OS machine ID available; fall through to the fallback below
     return ""
 
 
@@ -120,7 +120,7 @@ def _write_private(path: Path, data: bytes):
     try:
         os.chmod(path, 0o600)
     except OSError:
-        pass
+        pass  # best effort on filesystems without POSIX permissions; content is encrypted
 
 
 class _FileBackend:

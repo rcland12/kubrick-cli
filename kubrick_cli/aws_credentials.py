@@ -68,7 +68,7 @@ def write_env_file(path: str, values: Dict[str, str]):
     try:
         os.chmod(target, 0o600)
     except OSError:
-        pass
+        pass  # e.g. Windows or a filesystem without permissions; created 0600 anyway
 
 
 def is_usable(values: Dict[str, str]) -> bool:
