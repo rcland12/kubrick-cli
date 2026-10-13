@@ -1,5 +1,202 @@
 # Kubrick CLI Changelog
 
+## Version 0.2.0
+
+A rewrite of the core around native tool calling and a Claude Code-style agent loop. Kubrick
+is now provider-agnostic and tuned for local models.
+
+### Added
+
+- **Native tool calling on every provider**: providers convert a shared, provider-neutral
+  conversation format (`kubrick_cli/messages.py`) to their own wire format and stream text,
+  reasoning, and tool-call events. Triton keeps the text-based `tool_call` protocol, which is
+  also the automatic fallback for any server that rejects tool definitions.
+- **OpenAI-compatible provider** (`openai_compatible`) for Ollama, vLLM, llama.cpp, LM Studio,
+  and hosted compatible APIs:
+  - context-window detection (vLLM `max_model_len`, Ollama `/api/ps`)
+  - `reasoning_content` / `<think>` handling
+  - recovery of Hermes-style `<tool_call>` text
+  - automatic retry without `stream_options`
+  - the setup wizard lists the server's models
+- **Amazon Bedrock provider** (`bedrock`, `pip install 'kubrick-cli[bedrock]'`) using the
+  Converse streaming API. Tested live in commercial regions and GovCloud. Highlights:
+  - **credentials**: an AWS profile/SSO, a `.env` file (`bedrock_credentials_file`),
+    `KEY=VALUE` / `export KEY=VALUE` blocks pasted with `kubrick auth login bedrock` or
+    `/login` (kept in the encrypted store), the default chain, or Bedrock API keys
+    (`AWS_BEARER_TOKEN_BEDROCK`)
+  - **expiring keys**: reloads them once when they expire mid-session, then prompts for a
+    hidden paste and retries the request. A known expiry is shown at startup.
+  - **models**:
+    - a bare model ID switches automatically to its cross-region inference profile
+      (`us.`, `us-gov.`, `eu.`, `apac.`) when Bedrock requires one
+    - models without tool use fall back to the text protocol
+    - `<thinking>` output is shown as reasoning
+    - clearer errors for models an account can't use
+- **Anthropic provider rewrite**:
+  - default model `claude-opus-5-5`
+  - adaptive thinking with summarized display
+  - `anthropic_effort` setting
+  - prompt caching
+  - server-side refusal fallback on supported models
+  - thinking blocks preserved across tool calls
+  - retries on 429/5xx/529
+  - configurable `anthropic_base_url`
+- **OpenAI provider**: uses the Responses API, which gpt-6-era models require for tools.
+  The model's encrypted reasoning is passed back between steps, and gateways without
+  `/responses` fall back to Chat Completions. Default model `gpt-5`, configurable
+  `openai_base_url`.
+- **Credential store**:
+  - environment variables first, then the OS keychain (`[keyring]` extra), then
+    `~/.kubrick/credentials.json` encrypted with a machine-bound key
+  - optional `credential_max_age_days` to force re-login
+  - new `kubrick auth login|logout|status` commands
+- **Permission modes** `default`, `accept_edits`, `plan`, `bypass`, set with
+  `--permission-mode` or `/permissions`:
+  - "always allow" answers per session: all edits, or a command prefix
+  - read-only commands run without asking
+  - reads and edits outside the working directory ask
+  - denying with feedback redirects the agent
+- **Plan mode** (`/plan`): read-only investigation before making changes.
+- **Print mode** (`-p`): non-interactive single prompt, piped stdin, stdout/stderr split for
+  scripting.
+- **Project instructions**: `KUBRICK.md` (or `CLAUDE.md` / `AGENTS.md`) in the project and
+  its parents, plus `~/.kubrick/KUBRICK.md`, are loaded into the system prompt. `/init`
+  generates one.
+- **Context compaction**: provider-reported token usage, automatic summarization at
+  `context_usage_threshold`, cuts only at turn boundaries so tool calls stay paired with
+  results, and `/compact [focus]`.
+- **Command-line flags**: `-c/--continue`, `-r/--resume`, `-m/--model`, `-C/--working-dir`,
+  `--tool-calling`, `--max-iterations`, `--version`, and a `kubrick setup` subcommand.
+- **New slash commands**: `/clear`, `/compact`, `/model`, `/provider`, `/plan`,
+  `/permissions`, `/init`, `/status`, `/login`, `/debug messages`.
+- **Settings sources**: `KUBRICK_<KEY>` environment overrides for any setting, and session
+  overrides that are never saved.
+- **Tests**: end-to-end tests against a scripted OpenAI-compatible server, plus agent loop,
+  provider, credential, permission, context, and terminal UI tests. The `dev` extra now
+  includes boto3, so CI runs the Bedrock tests.
+- **Command menu**: typing `/` lists commands with descriptions and filters as you type.
+  Arrow keys pick one, Tab completes, Esc closes, and Enter without touching the menu sends
+  what was typed. Arguments complete too (providers, models, modes, saved conversations,
+  config keys), and unambiguous prefixes run directly (`/pro` runs `/provider`).
+- **Pickers**: `/provider`, `/model`, and `/permissions` without an argument open an
+  arrow-key menu with the current choice marked. The new `/setup` command reruns the wizard
+  in a session, and switching to an unconfigured provider offers to set it up.
+- **Setup wizard**:
+  - arrow-key menus throughout
+  - "Local model server" asks which server (Ollama, vLLM, llama.cpp, LM Studio) and takes a
+    plain `host:port` (`http://` and `/v1` are added)
+  - checks the connection live, with fixes for remote servers when it fails
+  - asks for an API key only when the server wants one
+  - reports the model's context window
+  - lists models for Anthropic, OpenAI, and Bedrock, which also checks the API key
+  - skips advanced settings such as base URLs (change those with `/config`)
+- **Permission prompts** are an arrow-key menu (`y`/`a`/`n` and number keys still work).
+- **Terminal compatibility**:
+  - numbered-prompt fallback for dumb terminals (Emacs `M-x shell`), with
+    `KUBRICK_SIMPLE_UI=1` to force it
+  - symbols that render in common fonts, or `KUBRICK_ASCII=1` for ASCII only
+  - `NO_COLOR` support
+  - `editing_mode: vi`
+- **`kubrick update` / `/update`**: checks PyPI and upgrades using the method Kubrick was
+  installed with (`uv tool`, pipx, or pip in a virtualenv); Docker and source checkouts get
+  instructions instead. `--check` only reports, and `--yes` upgrades without asking. A daily
+  background check (cached, never blocks startup) mentions new releases; disable it with
+  `check_for_updates: false`.
+- **Dev environment**: a `Makefile` (`make dev/run/test/lint/sandbox/reset`) that keeps
+  everything in `.venv/` and `.dev/`, a Docker sandbox (`docker/sandbox.Dockerfile`, with Python and Node.js), and a
+  buggy `examples/playground` project to try the agent on.
+
+### Changed
+
+- **Agent loop**: the model calls tools until it replies without any, as in Claude Code.
+  Tool results are proper tool messages, every tool call always gets a result, and refusals,
+  interrupts, and responses cut off at the token limit are handled explicitly. The default
+  `max_iterations` is now 50.
+- **Tools**:
+  - `read_file` returns numbered lines with `offset`/`limit` paging and refuses binary or
+    oversized files
+  - `edit_file` requires a unique match unless `replace_all` is set
+  - `search_files` takes a regex and uses ripgrep when available
+  - `run_bash` has a per-call `timeout`, closed stdin, and an exit code in the result
+  - arguments are validated against each tool's schema before running
+- **Display**: model text is streamed without rich-markup interpretation, reasoning is
+  dimmed, and tool calls show as one line each (`● Edit(path)`).
+- **System prompt**: concise and Claude Code-style, built once per conversation. Keeps the
+  0.1.7 rule that changes are made with tools, not shown as code for the user to paste
+  (local models often do that).
+- **Default provider** is `openai_compatible`. Setting `KUBRICK_PROVIDER` skips the setup
+  wizard.
+- **Logo**: `docs/images/logo.svg` (vector, under 1 KB) and `logo.png` (512 px), shown
+  next to the README title, and a 1280×640 `social-preview.png` for GitHub link previews.
+- **Docs**:
+  - `docs/CICD.md` and `docs/TESTING.md` rewritten to match the workflows (release on a
+    version bump reaching `master`; TestPyPI from `staging`)
+  - the other docs updated for the new wizard, commands, `kubrick update`, and dev
+    environment
+- **CI**:
+  - GitHub Actions bumped: `actions/upload-artifact` v7, `docker/setup-buildx-action`
+    v4, `docker/build-push-action` v7
+  - Dependabot now opens its PRs against `staging`
+  - Security Scanning can be run by hand from the Actions tab (`workflow_dispatch`)
+  - addressed the CodeQL code-quality findings (no security findings)
+  - the test job runs on `ubuntu-24.04`, because `ubuntu-latest` moves to Ubuntu 26.04
+    on 2026-10-19 and there is no Python 3.9 build for it
+  - Codecov action v7 with the `files` input (the old `file` input was ignored), and
+    the `CODECOV_TOKEN` secret passed when set
+- **Requirements**: Python 3.9 or newer, and `cryptography` is now a dependency.
+
+### Removed
+
+- The task classifier, LLM task evaluator, execution strategy and model-tier switching (which
+  silently replaced the configured model), regex completion heuristics and `TASK_COMPLETE`
+  markers, the automatic planning phase (replaced by `/plan`), and the progress tracker,
+  scheduler, and animated display modules.
+- Obsolete settings are dropped from `config.json` on load: `enable_task_classification`,
+  `enable_task_evaluator`, `clean_display`, `display_mode`, `context_windows`,
+  `model_max_context_override`, and others.
+
+### Fixed
+
+- The OSSF Scorecard job failed on every run: with `publish_results` it rejects workflows that
+  have write permissions at the top level or container jobs. It now has its own workflow,
+  `scorecard.yml`.
+- Tool names with leaked chat-template tokens (gpt-oss: `read_file<|channel|>commentary`)
+  are cleaned up. Before, the bad name was sent back to Bedrock and broke the conversation.
+- Whitespace between reasoning blocks no longer prints blank lines.
+- When a model writes a tool call as text instead of calling the tool (common with
+  open-weight models such as gpt-oss), Kubrick asks it once to retry, instead of
+  silently ending the turn.
+- "Always allow" for a command like `cd /repo && pytest` saved the rule `cd`, which then
+  auto-approved any command starting with `cd`. Rules now come from the real program
+  (`pytest`, `git commit`, `python -m pytest`), and each part of a chained command
+  (`&&`, `;`, `|`, `&`) must be read-only or allowed on its own.
+- `2>/dev/null` was flagged as "writing to device files", and stopped read-only commands
+  from being auto-approved.
+- `OpenAI-compatible` base URLs without `/v1` (e.g. `http://host:11434`) now work.
+- `kubrick -p` no longer hangs when stdin is an idle pipe (cron, IDE terminals, agent harnesses).
+- Quitting without sending a message no longer saves an empty conversation.
+- `--provider` no longer permanently rewrites the saved provider.
+- `kubrick --help` no longer launches the setup wizard on a fresh machine.
+- The Triton client no longer crashes on `text_output` values that parse as JSON scalars
+  (`"42"`, `"null"`).
+- Streaming reads whatever bytes have arrived instead of waiting for fixed-size buffers.
+- `/config` no longer displays API keys.
+- Tests no longer write to the real `~/.kubrick`.
+- `docs/TRITON.md`:
+  - the example model now uses the decoupled response sender
+  - request parameters are read correctly
+  - a working example is included under `examples/triton/`
+  - removed references to CLI flags and environment variables that don't exist
+
+### Security
+
+- Plaintext API keys found in `config.json` from 0.1.x are migrated into the credential store
+  and removed from the file. Consider rotating them.
+- `~/.kubrick` is created with mode `0700`; credential files are written with `0600`.
+- `.env` and `.env.*` are gitignored (except `.env.example`), so credential files kept in a
+  checkout can't be committed by accident. Pasted AWS keys are hidden as you type (only
+  the length is shown).
+
 ## Version 0.1.6
 
 ### Enhancements

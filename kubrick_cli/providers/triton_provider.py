@@ -1,18 +1,27 @@
 """Triton provider adapter."""
 
-from typing import Dict, Iterator, List
+from typing import Any, Dict, Iterator, List, Optional
 
+from ..messages import MessageDone, TextDelta, ToolSpec
+from ..tool_protocol import to_plain_messages
 from ..triton_client import TritonLLMClient
-from .base import ProviderAdapter, ProviderMetadata
+from .base import ProviderAdapter, ProviderError, ProviderMetadata
+
+# Generation options forwarded to the Triton model as request parameters.
+_PASSTHROUGH_OPTIONS = ("max_tokens", "temperature")
 
 
 class TritonProvider(ProviderAdapter):
-    """Provider adapter for Triton Inference Server."""
+    """Provider adapter for Triton Inference Server.
+
+    Triton models speak Kubrick's custom text streaming protocol (see
+    docs/TRITON.md), so tool calling uses the text ``tool_call`` protocol.
+    """
 
     METADATA = ProviderMetadata(
         name="triton",
-        display_name="Triton",
-        description="Self-hosted Triton Inference Server (default)",
+        display_name="NVIDIA Triton",
+        description="Self-hosted Triton Inference Server (text-based tool calling)",
         config_fields=[
             {
                 "key": "triton_url",
@@ -29,7 +38,11 @@ class TritonProvider(ProviderAdapter):
         ],
     )
 
-    def __init__(self, triton_url: str = "localhost:8000", triton_model: str = "llm_decoupled"):
+    supports_native_tools = False
+
+    def __init__(
+        self, triton_url: str = "localhost:8000", triton_model: str = "llm_decoupled"
+    ):
         """
         Initialize Triton provider.
 
@@ -41,44 +54,34 @@ class TritonProvider(ProviderAdapter):
         self._url = triton_url
         self._model_name = triton_model
 
-    def generate_streaming(
-        self, messages: List[Dict[str, str]], stream_options: Dict = None
-    ) -> Iterator[str]:
-        """
-        Generate streaming response from Triton.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            stream_options: Optional streaming parameters
-
-        Yields:
-            Text chunks as they arrive
-        """
-        yield from self.client.generate_streaming(messages, stream_options)
-
-    def generate(
-        self, messages: List[Dict[str, str]], stream_options: Dict = None
-    ) -> str:
-        """
-        Generate non-streaming response from Triton.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            stream_options: Optional parameters
-
-        Returns:
-            Complete response text
-        """
-        return self.client.generate(messages, stream_options)
+    def stream_chat(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[ToolSpec]] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Iterator[Any]:
+        """Stream a text response; ``tools`` is ignored (text protocol only)."""
+        params = {k: v for k, v in (options or {}).items() if k in _PASSTHROUGH_OPTIONS}
+        try:
+            for chunk in self.client.generate_streaming(
+                to_plain_messages(messages), params
+            ):
+                if chunk:
+                    yield TextDelta(chunk)
+        except ProviderError:
+            raise
+        except Exception as e:
+            raise ProviderError(f"Triton ({self.client.url}): {e}") from e
+        yield MessageDone(stop_reason="end_turn")
 
     def is_healthy(self) -> bool:
-        """
-        Check if Triton server is healthy.
-
-        Returns:
-            True if healthy, False otherwise
-        """
+        """Check if Triton server is healthy."""
         return self.client.is_healthy()
+
+    def set_model(self, model_name: str):
+        """Switch the Triton model used for subsequent requests."""
+        self._model_name = model_name
+        self.client.model_name = model_name
 
     @property
     def provider_name(self) -> str:

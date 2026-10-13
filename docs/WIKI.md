@@ -1,976 +1,266 @@
-# Kubrick CLI - Complete Documentation
+# Kubrick CLI Guide
 
-Complete guide to using Kubrick CLI for AI-assisted coding.
+Kubrick is an agentic coding assistant for the terminal. You describe a task; the model reads
+files, searches, edits, and runs commands through tools, and keeps going until it replies
+without calling a tool. Every provider (local servers, Anthropic, OpenAI, Bedrock, Triton) uses
+the same loop, tools, and permission rules.
 
-## Table of Contents
-
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Provider Support](#provider-support)
-- [Configuration](#configuration)
-- [Context Management](#context-management)
-- [Available Tools](#available-tools)
-- [Special Commands](#special-commands)
-- [Conversation Management](#conversation-management)
+- [Starting Kubrick](#starting-kubrick)
+- [Slash commands](#slash-commands)
+- [Tools](#tools)
+- [Permissions](#permissions)
+- [Plan mode](#plan-mode)
+- [Project instructions (KUBRICK.md)](#project-instructions-kubrickmd)
+- [Context management](#context-management)
+- [Conversations](#conversations)
+- [Configuration reference](#configuration-reference)
+- [Credentials](#credentials)
 - [Troubleshooting](#troubleshooting)
-- [Example Sessions](#example-sessions)
-- [Development](#development)
 
-## Features
+Provider setup is covered in [PROVIDERS.md](PROVIDERS.md).
 
-- 🤖 **AI-powered coding assistant** with natural conversation
-- 🔌 **Multi-provider support** - Use Triton, OpenAI, or Anthropic
-- 🛠️ **Robust tool calling** for automatic file operations and commands
-- 📁 **File operations**: read, write, edit with pattern matching
-- 🔍 **Code search** with glob patterns and grep-like functionality
-- 💻 **Bash command integration** for running scripts and commands
-- 🌊 **Real-time streaming responses** via HTTP (no external LLM libraries for Triton)
-- 💾 **Automatic conversation persistence** with searchable history
-- ⚙️ **Configuration management** with multiple override levels
-- 📂 **Conversation history** saved in `~/.kubrick`
-- 🔧 **Improved system prompts** with clear tool calling examples
-- 🛡️ **Fallback parser** for resilient tool call detection
-- 🐳 **Docker support** with working directory mounting
-- ✅ **Comprehensive test suite** with 100+ unit tests
-
-## Installation
-
-### Option 1: PyPI (Recommended)
-
-Install the latest stable release from PyPI:
+## Starting Kubrick
 
 ```bash
-pip install kubrick-cli
+kubrick                                   # interactive session in the current directory
+kubrick "fix the failing test"            # interactive, with a first message
+kubrick -p "summarize this repo"          # answer once, print, exit
+git diff | kubrick -p "review this diff"  # piped input is appended to the prompt
+kubrick -c                                # continue the most recent conversation
 ```
 
-This is the easiest and most reliable method. The package is available on [PyPI](https://pypi.org/project/kubrick-cli/).
-
-**Upgrade to latest version:**
-
-```bash
-pip install --upgrade kubrick-cli
-```
-
-### Option 2: Development Installation
-
-For contributing or testing the latest changes:
-
-```bash
-git clone https://github.com/rcland12/kubrick-cli.git
-cd kubrick-cli
-pip install -e ".[dev]"
-```
-
-This installs the `kubrick` command globally in editable mode.
-
-**Dependencies:** Only `rich` and `prompt_toolkit` for the CLI interface. No external LLM libraries required!
-
-### Option 3: Docker
-
-Run in a container without installing anything. Available from Docker Hub or GitHub Container Registry.
-
-#### Recommended: Use the kubrick-docker Wrapper
-
-```bash
-# Install wrapper (handles UID/GID automatically)
-curl -fsSL https://raw.githubusercontent.com/rcland12/kubrick-cli/master/scripts/install-kubrick-docker.sh | sh
-
-# Run from any project
-cd /path/to/your/project
-kubrick-docker
-```
-
-#### Or Use Docker Commands Directly
-
-**IMPORTANT:** Always include `--user $(id -u):$(id -g)` to avoid file permission issues!
-
-```bash
-cd /path/to/your/project
-
-# From Docker Hub
-docker run --rm -it \
-  --network host \
-  --user $(id -u):$(id -g) \
-  -v ${HOME}:/home/kubrick \
-  -v ${PWD}:/workspace \
-  -v /etc/localtime:/etc/localtime:ro \
-  -v /etc/timezone:/etc/timezone:ro \
-  rcland12/kubrick-cli
-
-# From GitHub Container Registry
-docker run --rm -it \
-  --network host \
-  --user $(id -u):$(id -g) \
-  -v ${HOME}:/home/kubrick \
-  -v ${PWD}:/workspace \
-  -v /etc/localtime:/etc/localtime:ro \
-  -v /etc/timezone:/etc/timezone:ro \
-  ghcr.io/rcland12/kubrick-cli
-```
-
-**Why `--user` is required:** Without it, files are created as root and you'll have permission issues. The wrapper script handles this automatically.
-
-See [DOCKER.md](DOCKER.md) for complete Docker setup, UID/GID configuration, and troubleshooting.
-
-## Usage
-
-### Basic Commands
-
-```bash
-# Start in current directory (uses default provider from config)
-kubrick
-
-# Use Triton provider (default)
-kubrick --triton-url my-server:8000 --triton-model llm_decoupled
-
-# Use OpenAI provider
-kubrick --provider openai --openai-model gpt-4
-
-# Use Anthropic provider
-kubrick --provider anthropic --anthropic-model claude-sonnet-4-5-20250929
-
-# Set working directory
-kubrick --working-dir /path/to/project
-
-# Load previous conversation
-kubrick --load 20240118_143022
-```
-
-See [PROVIDERS.md](PROVIDERS.md) for detailed multi-provider setup and configuration.
-
-### Command-Line Options
-
-#### Provider Selection
-
-| Option       | Environment Variable | Description                                      |
-| ------------ | -------------------- | ------------------------------------------------ |
-| `--provider` | -                    | LLM provider: `triton`, `openai`, or `anthropic` |
-
-#### Triton Provider Options
-
-| Option           | Environment Variable | Description                                      |
-| ---------------- | -------------------- | ------------------------------------------------ |
-| `--triton-url`   | `TRITON_URL`         | Triton server HTTP URL (default: localhost:8000) |
-| `--triton-model` | `TRITON_MODEL`       | Triton model name (default: llm_decoupled)       |
-
-#### OpenAI Provider Options
-
-| Option             | Environment Variable | Description                   |
-| ------------------ | -------------------- | ----------------------------- |
-| `--openai-api-key` | `OPENAI_API_KEY`     | OpenAI API key (required)     |
-| `--openai-model`   | `OPENAI_MODEL`       | OpenAI model (default: gpt-4) |
-
-#### Anthropic Provider Options
-
-| Option                | Environment Variable | Description                                           |
-| --------------------- | -------------------- | ----------------------------------------------------- |
-| `--anthropic-api-key` | `ANTHROPIC_API_KEY`  | Anthropic API key (required)                          |
-| `--anthropic-model`   | `ANTHROPIC_MODEL`    | Anthropic model (default: claude-sonnet-4-5-20250929) |
-
-#### General Options
-
-| Option          | Environment Variable | Description                                   |
-| --------------- | -------------------- | --------------------------------------------- |
-| `--working-dir` | -                    | Working directory for file operations         |
-| `--load`        | -                    | Load previous conversation by ID or file path |
-
-**Priority order:** CLI arguments > Environment variables > Config file > Defaults
-
-## Provider Support
-
-Kubrick supports multiple LLM providers, allowing you to use:
-
-### Triton Inference Server (Default)
-
-- **Self-hosted**: Run your own LLM models
-- **No API costs**: Complete control and privacy
-- **Streaming support**: Real-time responses via HTTP
-- **Setup**: See [TRITON.md](TRITON.md) for Triton configuration
-
-### OpenAI
-
-- **Easy setup**: Just add your API key
-- **Models**: GPT-4, GPT-3.5-turbo, and more
-- **Quick start**: `kubrick --provider openai --openai-model gpt-4`
-
-### Anthropic (Claude)
-
-- **Claude models**: Claude Sonnet, Opus, etc.
-- **High quality**: State-of-the-art language understanding
-- **Quick start**: `kubrick --provider anthropic --anthropic-model claude-sonnet-4-5-20250929`
-
-### Custom Providers
-
-Want to add support for another LLM? See [PROVIDERS.md](PROVIDERS.md) for a guide on creating custom provider adapters. The system is designed to be plug-and-play - just drop a new provider file in and it's automatically discovered!
-
-## Configuration
-
-### Config File Location
-
-All configuration is stored at `~/.kubrick/config.json`. Kubrick creates this automatically on first run with sensible defaults.
-
-### Complete Configuration Reference
-
-Here are all available configuration options:
-
-```json
-{
-  // Provider Settings
-  "provider": "triton",                    // LLM provider: "triton", "openai", or "anthropic"
-
-  // Triton Provider Settings
-  "triton_url": "localhost:8000",          // Triton server URL
-  "triton_model": "llm_decoupled",         // Triton model name
-
-  // OpenAI Provider Settings
-  "openai_api_key": null,                  // OpenAI API key
-  "openai_model": "gpt-4",                 // OpenAI model name
-
-  // Anthropic Provider Settings
-  "anthropic_api_key": null,               // Anthropic API key
-  "anthropic_model": "claude-sonnet-4-5-20250929",  // Anthropic model name
-
-  // General Settings
-  "default_working_dir": null,             // Default working directory
-  "auto_save_conversations": true,         // Auto-save conversations after each turn
-  "max_conversations": 100,                // Max conversations to keep (auto-cleanup)
-
-  // Agent Loop Settings
-  "max_iterations": 15,                    // Maximum agentic iterations per turn
-  "max_tools_per_turn": 5,                 // Maximum tools per iteration
-  "total_timeout_seconds": 600,            // Total timeout for agent loop (10 min)
-  "enable_parallel_tools": true,           // Enable parallel tool execution
-  "max_parallel_workers": 3,               // Max parallel tool workers
-
-  // Safety Settings
-  "require_dangerous_command_confirmation": true,  // Confirm dangerous bash commands
-  "tool_timeout_seconds": 30,              // Timeout for individual tools
-  "max_file_size_mb": 10,                  // Maximum file size to read (MB)
-
-  // Display Settings
-  "display_mode": "natural",               // Display mode: "natural" or "technical"
-  "show_tool_results": true,               // Show tool execution results
-  "show_progress": true,                   // Show progress indicators
-  "clean_display": true,                   // Suppress raw JSON tool calls (recommended)
-
-  // Task Classification Settings
-  "enable_task_classification": true,      // Enable automatic task classification
-  "enable_planning_phase": true,           // Enable planning phase for complex tasks
-
-  // Task Evaluator Settings (Advanced)
-  "enable_task_evaluator": false,          // EXPERIMENTAL: LLM-based completion detection (can interfere)
-  "evaluator_model": null,                 // Model for evaluator (null = use main model)
-
-  // Context Management Settings
-  "enable_context_management": true,       // Enable automatic context management
-  "context_usage_threshold": 0.75,         // Start trimming at 75% of available context
-  "context_summarization_threshold": 0.85, // Summarize at 85% of available context
-  "min_messages_to_keep": 4,               // Always preserve last N messages
-  "max_tool_result_chars": 10000,          // Truncate tool results longer than this
-  "max_output_tokens": 2048,               // Reserve tokens for LLM output
-
-  // Model Context Windows (in tokens)
-  "context_windows": {
-    // OpenAI models
-    "gpt-4": 128000,                       // Modern GPT-4 (128k context)
-    "gpt-4-turbo": 128000,
-    "gpt-4o": 128000,
-    "gpt-4o-mini": 128000,
-    "gpt-3.5-turbo": 16385,
-
-    // Anthropic models
-    "claude-sonnet-4-5-20250929": 200000,  // Claude has 200k context
-    "claude-opus-4-1-20250805": 200000,
-    "claude-3-5-sonnet-20241022": 200000,
-
-    // Triton/vLLM
-    "llm_decoupled": 8192                  // Conservative default for Triton
-  },
-  "default_context_window": 8192,          // Fallback for unknown models
-  "model_max_context_override": null       // Manual override for custom model configs
-}
-```
-
-### Key Configuration Options Explained
-
-#### Context Management (⭐ Important!)
-
-These settings control how Kubrick manages conversation length to prevent context overflow:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `enable_context_management` | `true` | Enable automatic context management |
-| `model_max_context_override` | `null` | **Override context window** - Set this to match your vLLM `--max-model-len` if using custom Triton models |
-| `max_output_tokens` | `2048` | Tokens reserved for LLM output (prevents input from using all space) |
-| `context_usage_threshold` | `0.75` | Start trimming old messages at 75% usage |
-| `context_summarization_threshold` | `0.85` | Summarize conversation at 85% usage |
-| `min_messages_to_keep` | `4` | Always preserve last N messages |
-| `max_tool_result_chars` | `10000` | Truncate large tool outputs |
-
-**For Triton/vLLM users**: If you're loading models with custom context lengths (e.g., `--max-model-len 16384`), you MUST set:
-
-```bash
-/config model_max_context_override 16384
-/config max_output_tokens 2048
-```
-
-See the [Context Management](#context-management) section for detailed guidance.
-
-#### Agent Behavior
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `max_iterations` | `15` | How many times the agent can iterate |
-| `max_tools_per_turn` | `5` | Maximum tools per iteration |
-| `total_timeout_seconds` | `600` | Total time limit (10 minutes) |
-| `enable_parallel_tools` | `true` | Run read-only tools in parallel |
-| `max_parallel_workers` | `3` | Number of parallel tool workers |
-
-#### Display Options
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `display_mode` | `"natural"` | Display style: `"natural"` (friendly) or `"technical"` (detailed) |
-| `show_tool_results` | `true` | Show full tool execution results in output |
-| `show_progress` | `true` | Show progress indicators and status messages |
-| `clean_display` | `true` | **Suppress raw JSON tool calls** - Shows only clean output, hides technical JSON blocks ✨ |
-
-**Clean Display Mode** (recommended): When enabled, Kubrick hides the raw `\`\`\`tool_call {...}` JSON blocks during streaming, giving you cleaner output while still showing:
-- All agent responses and explanations
-- Tool execution messages (`→ Called write_file`, `✓ succeeded`)
-- Iteration progress and status
-- Error messages and warnings
-
-Disable with `/config clean_display false` if you want to see the raw JSON for debugging.
-
-#### Safety & Limits
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `require_dangerous_command_confirmation` | `true` | Confirm dangerous bash commands (rm, sudo, etc.) |
-| `tool_timeout_seconds` | `30` | Individual tool timeout |
-| `max_file_size_mb` | `10` | Maximum file size to read |
-
-#### Task Evaluator (⚠️ Experimental)
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `enable_task_evaluator` | `false` | **EXPERIMENTAL** - Uses LLM to intelligently detect task completion |
-| `evaluator_model` | `null` | Model for evaluator (null = use main model, or specify "gpt-4o-mini", etc.) |
-
-**Note:** The task evaluator is currently **disabled by default** as it can sometimes interfere with the agent's tool calling behavior. It was designed to detect when tasks are complete or if the agent is stuck, but in practice it can cause the agent to apologize unnecessarily or stop prematurely. Leave it disabled unless you want to experiment with it.
-
-### Environment Variables
-
-Override config with environment variables:
-
-```bash
-# Triton provider
-export TRITON_URL=my-server:8000
-export TRITON_MODEL=llm_decoupled
-
-# OpenAI provider
-export OPENAI_API_KEY=sk-...
-export OPENAI_MODEL=gpt-4
-
-# Anthropic provider
-export ANTHROPIC_API_KEY=sk-ant-...
-export ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
-
-kubrick --provider openai
-```
-
-### In-Session Configuration
-
-Update config while running:
-
-```bash
-You: /config                    # Show all configuration
-You: /config triton_url myserver:8000
-You: /config max_conversations 50
-You: /config model_max_context_override 16384
-```
-
-### Common Configuration Examples
-
-```bash
-# For Triton/vLLM with custom context
-/config model_max_context_override 16384
-/config max_output_tokens 2048
-
-# Adjust context management thresholds
-/config context_usage_threshold 0.60     # Trim earlier (more aggressive)
-/config context_summarization_threshold 0.75
-
-# Increase max iterations for complex tasks
-/config max_iterations 20
-
-# Disable parallel tools (if causing issues)
-/config enable_parallel_tools false
-```
-
-## Context Management
-
-Kubrick includes sophisticated context management to prevent conversations from exceeding model limits. This prevents hallucinations and ensures stable, long-running conversations.
-
-### How It Works
-
-Context management operates in three stages:
-
-1. **Normal Operation** (< 75% usage)
-   - No intervention
-   - Full conversation history preserved
-
-2. **Trimming** (75% - 85% usage)
-   - Removes oldest messages (except system prompt and recent N messages)
-   - Adds a note about trimmed messages
-   - Targets 60% usage to leave growth room
-
-3. **Summarization** (> 85% usage)
-   - Uses LLM to summarize middle conversation
-   - Keeps: system prompt + summary + recent messages
-   - Preserves important context while reducing tokens
-
-4. **Emergency Reset** (exceeds 100%)
-   - Rare, but prevents complete failure
-   - Keeps only system prompt + last user message
-
-### Provider-Specific Context Windows
-
-| Provider | Model | Context Window | Output Reserved | Available |
-|----------|-------|----------------|-----------------|-----------|
-| **OpenAI** | gpt-4 | 128,000 | 2,048-4,096 | ~124k-126k |
-| | gpt-4o | 128,000 | 2,048-4,096 | ~124k-126k |
-| | gpt-3.5-turbo | 16,385 | 2,048-4,096 | ~12k-14k |
-| **Anthropic** | Claude 3+ | 200,000 | 2,048-4,096 | ~196k-198k |
-| **Triton/vLLM** | Custom | **Configure!** | 2,048+ | Depends |
-
-### Monitoring Context Usage
-
-Check your context usage anytime:
-
-```bash
-You: /context
-```
-
-This displays:
-- Current token count
-- Context window size
-- Usage percentage
-- Trim/summarize thresholds
-- Warning if approaching limits
-
-Example output:
-```
-┌────────────────────────────┐
-│ Context Window Status      │
-├──────────────┬─────────────┤
-│ Metric       │ Value       │
-├──────────────┼─────────────┤
-│ Current      │ 5,234       │
-│ Context      │ 128,000     │
-│ Usage        │ 4.1%        │
-│ Trim at      │ 75%         │
-│ Summarize at │ 85%         │
-└──────────────┴─────────────┘
-
-✓ Context usage healthy
-```
-
-### Configuring for Triton/vLLM
-
-**CRITICAL**: If you're using Triton/vLLM with custom model configurations, you MUST set the context window to match your deployment:
-
-```bash
-# Example: Gemma 3 27B with 16K context
-# If you launched vLLM with: --max-model-len 16384
-kubrick
-/config model_max_context_override 16384
-/config max_output_tokens 2048
-
-# Example: Llama 3.3 70B with full 128K context
-# If you launched vLLM with: --max-model-len 131072
-/config model_max_context_override 131072
-/config max_output_tokens 8192
-```
-
-**Why this matters**:
-- Default for Triton is conservative (8,192 tokens)
-- If your model supports more, you'll trim way too often
-- If you set too high, you'll get hallucinations and errors
-
-### Adjusting Context Behavior
-
-```bash
-# More aggressive trimming (trim earlier, use less context)
-/config context_usage_threshold 0.60
-/config context_summarization_threshold 0.75
-
-# Less aggressive (use more context before trimming)
-/config context_usage_threshold 0.85
-/config context_summarization_threshold 0.92
-
-# Adjust output reservation
-/config max_output_tokens 4096     # For longer responses
-/config max_output_tokens 1024     # For short, concise responses
-```
-
-### Troubleshooting Context Issues
-
-#### "Context trimming too frequently"
-
-**Symptoms**: Seeing "Context managed: trimmed" very often
-
-**Solutions**:
-1. Check your actual context window: `/context`
-2. For OpenAI/Anthropic: Should be 128k/200k (if showing 8k, update Kubrick)
-3. For Triton/vLLM: Set `model_max_context_override` to match your `--max-model-len`
-4. Increase thresholds: `/config context_usage_threshold 0.85`
-5. Reduce output reservation: `/config max_output_tokens 2048`
-
-#### "Still getting hallucinations"
-
-**Symptoms**: LLM outputs garbage, lyrics, or nonsense at end of response
-
-**Solutions**:
-1. Check context: `/context` - are you hitting limits?
-2. Verify `model_max_context_override` matches your vLLM config
-3. Reduce `max_output_tokens` to reserve more space for input
-4. Some vLLM versions don't respect `max_tokens` properly - try smaller values
-
-#### "Not trimming when I expect it to"
-
-**Check**:
-1. View usage: `/context`
-2. Verify context management is enabled: `/config | grep context`
-3. Lower thresholds: `/config context_usage_threshold 0.60`
-
-### Best Practices
-
-1. **OpenAI/Anthropic users**: Defaults are optimized, no changes needed
-2. **Triton/vLLM users**: ALWAYS set `model_max_context_override` to match your deployment
-3. **Monitor with `/context`** during long conversations
-4. **Adjust output tokens** based on your use case:
-   - Code snippets: 2048
-   - Full files: 4096
-   - Large files/detailed explanations: 8192
-5. **Don't over-reserve** output tokens - reduces available conversation space
-
-See [PROVIDER_CONTEXT_RECOMMENDATIONS.md](../PROVIDER_CONTEXT_RECOMMENDATIONS.md) for detailed provider-specific guidance.
-
-## Available Tools
-
-The AI assistant can automatically use these tools:
-
-### File Operations
-
-- **read_file** - Read file contents
-
-  ```json
-  { "tool": "read_file", "parameters": { "file_path": "main.py" } }
-  ```
-
-- **write_file** - Create or overwrite files
-
-  ```json
-  {
-    "tool": "write_file",
-    "parameters": { "file_path": "test.py", "content": "..." }
-  }
-  ```
-
-- **edit_file** - Replace text in files
-
-  ```json
-  {
-    "tool": "edit_file",
-    "parameters": {
-      "file_path": "main.py",
-      "old_text": "...",
-      "new_text": "..."
-    }
-  }
-  ```
-
-- **create_directory** - Create directories
-  ```json
-  { "tool": "create_directory", "parameters": { "dir_path": "src/utils" } }
-  ```
-
-### Code Search
-
-- **list_files** - Find files by pattern (glob)
-
-  ```json
-  { "tool": "list_files", "parameters": { "pattern": "**/*.py" } }
-  ```
-
-- **search_files** - Search for text in files (grep-like)
-  ```json
-  {
-    "tool": "search_files",
-    "parameters": { "pattern": "def main", "file_pattern": "*.py" }
-  }
-  ```
-
-### Command Execution
-
-- **run_bash** - Execute bash commands
-  ```json
-  { "tool": "run_bash", "parameters": { "command": "pytest tests/" } }
-  ```
-
-## Special Commands
-
-Use these commands during a Kubrick session:
-
-| Command             | Description                                                             |
-| ------------------- | ----------------------------------------------------------------------- |
-| `/save`             | Manually save the current conversation                                  |
-| `/list [N]`         | List saved conversations (default: 20, shows numbered list)             |
-| `/load <#\|ID>`     | Load a conversation by number (from /list) or ID                        |
-| `/config`           | Show current configuration                                              |
-| `/config KEY VALUE` | Update a configuration setting                                          |
-| `/context`          | **Show context window usage and status** (tokens, thresholds, warnings) |
-| `/delete ID`        | Delete a saved conversation                                             |
-| `/debug`            | Show debug information (conversation ID, message count, provider, etc.) |
-| `/debug prompt`     | Display the full system prompt being used                               |
-| `/help`             | Show all available in-session commands with examples                    |
-| `exit` or `quit`    | Save conversation and exit Kubrick                                      |
-
-**Loading Conversations:**
-
-You can load conversations in two ways:
-
-1. **In-session (new!)**: Use `/list` to see numbered conversations, then `/load <#>`:
-
-   ```bash
-   You: /list
-   # Shows numbered list of conversations
-   You: /load 1              # Load conversation #1 from the list
-   You: /load 20240118_143022  # Or load by ID
-   ```
-
-2. **At startup**: Use `--load` when starting Kubrick:
-   ```bash
-   kubrick --load 20240118_143022              # Load by ID
-   kubrick --load /path/to/conversation.json   # Load by file path
-   ```
-
-### Examples
-
-```bash
-# List conversations
-You: /list
-
-# Show config
-You: /config
-
-# Update config
-You: /config triton_url localhost:9000
-You: /config model_max_context_override 16384
-
-# Check context usage
-You: /context
-
-# Delete old conversation
-You: /delete 20240115_120000
-
-# Show debug info
-You: /debug
-
-# View system prompt
-You: /debug prompt
-```
-
-### Common Configuration Commands
-
-```bash
-# For Triton/vLLM users with custom context
-You: /config model_max_context_override 16384
-You: /config max_output_tokens 2048
-You: /context  # Verify settings
-
-# Adjust context management behavior
-You: /config context_usage_threshold 0.60
-You: /config context_summarization_threshold 0.75
-
-# Increase agent iterations for complex tasks
-You: /config max_iterations 20
-
-# Change provider mid-session (requires restart to take effect)
-You: /config provider openai
-```
-
-## Conversation Management
-
-### Automatic Saving
-
-Kubrick automatically saves conversations to `~/.kubrick/conversations/` after each turn.
-
-### Loading Conversations
-
-Kubrick supports loading conversations in two ways:
-
-#### 1. By Conversation ID (from ~/.kubrick/conversations/)
-
-```bash
-# Load by ID (searches in ~/.kubrick/conversations/)
-kubrick --load 20240118_143022
-
-# List available conversations to find IDs
-You: /list 20
-```
-
-#### 2. By File Path (from anywhere)
-
-```bash
-# Load from absolute path
-kubrick --load /path/to/conversation.json
-
-# Load from relative path
-kubrick --load ../saved-conversations/session.json
-
-# Load from home directory (~ expansion supported)
-kubrick --load ~/backup/important-conversation.json
-```
-
-**Use Cases:**
-
-- **Share conversations**: Export a conversation JSON and share with team members
-- **Version control**: Save conversations in your project repo for documentation
-- **Backup/restore**: Keep important conversations backed up outside ~/.kubrick
-- **Cross-machine**: Move conversations between development machines
-
-**Example Workflow:**
-
-```bash
-# Save a conversation to your project
-cp ~/.kubrick/conversations/20240118_143022.json ~/my-project/ai-debug-session.json
-
-# Commit to version control
-git add ai-debug-session.json
-git commit -m "Add AI debugging session"
-
-# Load it later (on any machine with the repo)
-kubrick --load ~/my-project/ai-debug-session.json
-```
-
-### Conversation Files
-
-Each conversation is saved as JSON:
-
-```json
-{
-  "id": "20240118_143022",
-  "messages": [...],
-  "metadata": {
-    "working_dir": "/path/to/project",
-    "triton_url": "localhost:8000"
-  }
-}
-```
+### Flags
+
+| Flag | Meaning |
+| --- | --- |
+| `prompt` (positional) | Initial message |
+| `-p`, `--print` | Non-interactive: run the prompt, print the answer to stdout (status goes to stderr), exit. Exit code 0 on success, 1 on error. Used automatically when there is no terminal. |
+| `-c`, `--continue` | Continue the most recent saved conversation |
+| `-r`, `--resume`, `--load ID` | Resume a conversation by ID or JSON file path |
+| `--provider NAME` | Provider for this session (`openai_compatible`, `anthropic`, `openai`, `bedrock`, `triton`) |
+| `-m`, `--model NAME` | Model for this session |
+| `-C`, `--working-dir DIR` | Directory the agent works in (default: current) |
+| `--permission-mode MODE` | `default`, `accept_edits`, `plan`, or `bypass` for this session |
+| `--tool-calling MODE` | `auto`, `native`, or `text` |
+| `--max-iterations N` | Model calls allowed per turn |
+| `--version` | Print the version |
+
+Session flags are never written to `config.json`.
+
+### Subcommands
+
+| Command | Meaning |
+| --- | --- |
+| `kubrick setup` | Run the setup wizard (choose a provider, enter settings and keys) |
+| `kubrick auth login [provider]` | Prompt for and store a provider's API key (default: configured provider). For `bedrock`, paste `AWS_...=` lines |
+| `kubrick auth logout [provider]` | Delete stored keys (all providers if none given) |
+| `kubrick auth status` | Show where each key comes from: env var, store, expired, or not set |
+| `kubrick update [--check] [--yes]` | Check PyPI and upgrade the way Kubrick was installed (uv tool, pipx, pip); `--check` only reports |
+
+### Keys
+
+- **Enter** submits; **Alt+Enter** (or Esc then Enter) or **Ctrl+J** inserts a newline
+- **Ctrl+C** interrupts the agent mid-response or mid-tool; at the prompt, press twice to quit
+- **Ctrl+D** or `exit` saves and quits
+- Input history is saved in `~/.kubrick/history`
+
+The status bar shows the provider and model, the permission mode, context usage, tool and file
+counts, and the working directory.
+
+## Slash commands
+
+| Command | Meaning |
+| --- | --- |
+| `/help` | List commands and keys. Typing `/` also opens a menu of commands that filters as you type (↑/↓ to pick, Tab to complete, Esc to close) |
+| `/clear` | Save and start a new conversation |
+| `/compact [focus]` | Summarize the conversation now, optionally telling the summary what to emphasize |
+| `/context` | Context window size, estimated usage, compaction threshold, last reported token usage |
+| `/model [name]` | Pick from the models the server lists, or switch to `name`, for this session |
+| `/provider [name]` | Pick or switch the provider for this session; offers to set up one that isn't configured |
+| `/setup` | Run the setup wizard and switch to the result |
+| `/login` | Enter new credentials for the current provider (for Bedrock: paste AWS keys) |
+| `/plan` | Toggle plan mode |
+| `/permissions [mode]` | Show the session's allow-rules and pick a mode, or set `mode` |
+| `/init` | Ask the agent to write a `KUBRICK.md` for this project |
+| `/status` | Provider, model, tool-calling mode, credential store, token totals |
+| `/save` | Save the conversation now (conversations also auto-save after every turn) |
+| `/list [N]` | List saved conversations (default 20) |
+| `/load <#\|id>` | Resume a conversation by its `/list` number or ID |
+| `/delete <id>` | Delete a saved conversation |
+| `/config` | Show every setting |
+| `/config KEY` | Show one setting |
+| `/config KEY VALUE` | Save a setting to `config.json` (VALUE is parsed as JSON when possible). Provider settings take effect on restart. API keys are rejected here; use `kubrick auth login`. |
+| `/debug prompt` | Show the system prompt |
+| `/debug messages` | Show the last 10 messages as JSON |
+| `/update` | Check for a new release and install it (restart afterwards) |
+| `/exit` | Save and quit (also `exit`, `quit`, Ctrl+D) |
+| `exit`, `quit` | Save and quit |
+
+## Tools
+
+| Tool | What it does |
+| --- | --- |
+| `read_file` | Reads a text file with line numbers; up to 2000 lines by default, with `offset`/`limit` for paging. Refuses binary files and files over `max_file_size_mb`. |
+| `write_file` | Creates or overwrites a file, creating parent directories |
+| `edit_file` | Replaces an exact string. It must match exactly once unless `replace_all` is set. |
+| `list_files` | Glob search (e.g. `src/**/*.py`), max 500 results; skips `.git`, `node_modules`, virtualenvs, build output |
+| `search_files` | Regex search over file contents, using ripgrep when installed; optional `file_pattern` and `case_insensitive` |
+| `run_bash` | Runs a shell command in the working directory with stdin closed. Returns the exit code and output; times out after `tool_timeout_seconds` (max 600). |
+| `create_directory` | Creates a directory |
+
+Arguments are validated against each tool's schema before anything runs; invalid calls are
+returned to the model as errors. Consecutive read-only calls run in parallel. Tool output over
+`max_tool_result_chars` is truncated (head and tail kept).
+
+## Permissions
+
+Every tool call passes a permission check first.
+
+| Mode | File reads | File edits | Shell commands |
+| --- | --- | --- | --- |
+| `default` | allowed in the working dir | ask | ask (read-only commands allowed) |
+| `accept_edits` | allowed in the working dir | allowed in the working dir | ask (read-only commands allowed) |
+| `plan` | allowed in the working dir | refused | read-only commands only |
+| `bypass` | allowed | allowed | allowed (dangerous commands still ask) |
+
+Rules that apply in every mode except `bypass`:
+
+- **Outside the working directory**: reading or editing a file outside the working directory
+  always asks, even in `accept_edits`.
+- **Read-only commands run without asking**: `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`,
+  `find` (without `-exec`/`-delete`), `tree`, `diff`, `git status/diff/log/show/ls-files/blame/rev-parse`,
+  and similar. Pipelines and `&&` chains qualify only if every part is read-only and there are
+  no redirections or `$(...)`.
+- **Dangerous commands** (`rm -rf`, `sudo`, `chmod 777`, force-push, `curl | bash`, `mkfs`,
+  `dd` to devices, ...) always show a warning and ask, including in `bypass` mode when
+  someone is at the terminal.
+
+When asked, answer:
+
+- `y`: allow this once.
+- `a`: allow it for the rest of the session. For edits, this allows all edits in the working
+  directory. For commands, it allows the command's prefix: the first word (`pytest`), or the
+  first two words for tools with subcommands (`git commit`, `npm test`, `docker build`, ...).
+- `n`: deny. You can then type what the agent should do instead, and the agent continues with
+  that guidance. Press Enter with nothing typed to stop the turn and get the prompt back.
+
+In non-interactive runs (`-p`, no terminal), anything that would ask is denied and the model is
+told to rerun with `--permission-mode accept_edits` or `bypass`.
+
+## Plan mode
+
+`/plan` (or `--permission-mode plan`) makes the agent read-only: it can read, search, and run
+read-only commands, but edits and other commands are refused with a message telling the model
+to present a plan. Ask for the plan, review it, then run `/plan` again to restore the previous
+mode and let it make the changes.
+
+## Project instructions (KUBRICK.md)
+
+Kubrick adds instruction files to the system prompt at the start of each conversation:
+
+- `~/.kubrick/KUBRICK.md`: your personal instructions for every project
+- In the working directory and each parent directory, up to the repository root (the directory
+  containing `.git`) or your home directory: the first of `KUBRICK.md`, `CLAUDE.md`, or
+  `AGENTS.md` found in each directory. Files closer to the working directory take precedence.
+
+Good contents: build/test/lint commands, architecture notes, conventions, things to avoid.
+`/init` asks the agent to write one by analyzing the repo. Instructions are capped at 40,000
+characters.
+
+## Context management
+
+The context window is resolved in this order:
+
+1. `context_window` from config
+2. What the backend reports: vLLM's `max_model_len`, Ollama's loaded `context_length`, or
+   Anthropic's model `max_input_tokens`
+3. Known model families (e.g. current Claude models 1M, `gpt-5` 400k), else a per-provider
+   default (32,768 for local servers and Triton)
+
+Token usage comes from provider-reported usage when available, plus an estimate for messages
+added since. Before each model call, if usage exceeds `context_usage_threshold` (80%) of the
+window minus the reserved output space, Kubrick **compacts**: older turns are replaced by a
+model-written summary, and the most recent turns are kept verbatim. If there is only one long
+turn, older tool outputs inside it are shortened instead. `/compact [focus]` does this on
+demand; `/context` shows the numbers.
+
+## Conversations
+
+Conversations are saved after every turn to `~/.kubrick/conversations/<id>.json`, keeping the
+`max_conversations` most recent. Resume with `kubrick -c` (most recent), `kubrick -r <id or path>`,
+or `/list` then `/load <#>`. A resumed conversation gets a fresh system prompt for the current
+directory.
+
+## Configuration reference
+
+Settings live in `~/.kubrick/config.json` (or `$KUBRICK_HOME/config.json`). Any setting can be
+overridden by a `KUBRICK_<KEY>` environment variable (values parsed as JSON when possible) or
+for one session by CLI flags. Provider-specific keys (`openai_compatible_base_url`,
+`anthropic_model`, `bedrock_region`, ...) are listed in [PROVIDERS.md](PROVIDERS.md).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `provider` | `openai_compatible` | Active provider |
+| `max_iterations` | `50` | Model calls allowed per user turn; then Kubrick stops and you can say "continue" |
+| `tool_calling` | `auto` | `auto` (native, falling back to text if the server rejects tools), `native`, `text` |
+| `enable_parallel_tools` | `true` | Run consecutive read-only tool calls concurrently |
+| `max_parallel_workers` | `4` | Thread pool size for parallel tools |
+| `permission_mode` | `default` | `default`, `accept_edits`, `plan`, `bypass` |
+| `tool_timeout_seconds` | `120` | Default `run_bash` timeout |
+| `max_file_size_mb` | `10` | Largest file `read_file` will load |
+| `credential_store` | `auto` | `auto` (OS keychain if available, else encrypted file), `keyring`, `file` |
+| `credential_max_age_days` | `null` | If set, stored keys older than this are treated as missing (forces re-login) |
+| `enable_context_management` | `true` | Track context usage and compact automatically |
+| `context_window` | `null` | Context window in tokens; overrides what the backend reports |
+| `context_usage_threshold` | `0.8` | Compact when this fraction of the usable window is in use |
+| `max_output_tokens` | `null` | Max tokens per response; `null` uses the provider default |
+| `max_tool_result_chars` | `30000` | Cap on each tool result added to the conversation |
+| `show_thinking` | `true` | Show model reasoning (dimmed) while it works |
+| `editing_mode` | `emacs` | Key bindings in the input box: `emacs` or `vi` |
+| `check_for_updates` | `true` | Check PyPI once a day and mention new releases at startup |
+| `auto_save_conversations` | `true` | Save conversations after each turn |
+| `max_conversations` | `100` | Saved conversations to keep |
+
+Settings from older versions that no longer apply are removed from `config.json` automatically.
+
+## Credentials
+
+API keys are never written to `config.json`. Each key resolves from its environment variable
+(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`) first, then the
+credential store: the OS keychain when available (install `kubrick-cli[keyring]`), otherwise
+`~/.kubrick/credentials.json` encrypted with a machine-bound key. If a required key is
+missing in an interactive session, Kubrick asks for it and stores it. Bedrock uses the AWS
+credential chain. Details: [SECURITY.md](SECURITY.md#credential-storage).
 
 ## Troubleshooting
 
-### Tool Calling Issues
+**The local model ignores instructions, forgets tools, or behaves erratically.**
+The context window is probably too small and prompts are being truncated. On Ollama, start the
+server with `OLLAMA_CONTEXT_LENGTH=32768` (or more); on vLLM raise `--max-model-len`; on
+llama.cpp raise `-c`. Then check `/context`, or set `/config context_window <tokens>` to match
+the server. Kubrick warns at startup when the window is under 16k.
 
-**Problem:** LLM not using tools properly
+**"This model/server doesn't accept native tool definitions; switching to text-based tool
+calling."** The server rejected `tools` (an Ollama model without tool support, or vLLM without
+`--enable-auto-tool-choice --tool-call-parser ...`). Kubrick continues with the text protocol.
+Enable tool calling on the server for better results, or set `tool_calling` to `text` to skip
+the check.
 
-**Solution:** Ensure the LLM outputs tool calls in this format:
+**401 / authentication errors.** Run `kubrick auth status`. An exported `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` takes precedence over keys stored with `kubrick auth login`, so an old key in
+your shell profile overrides a new stored one. Remove or update the export, or store the new
+key with `kubrick auth login <provider>`.
 
-````markdown
-```tool_call
-{
-  "tool": "read_file",
-  "parameters": {
-    "file_path": "example.py"
-  }
-}
-```
-````
+**"unreadable (machine key changed)" or "expired" in `auth status`.** The machine key was
+deleted, the store was copied from another machine, or `credential_max_age_days` passed. Run
+`kubrick auth login <provider>`.
 
-**Fallback:** Even without markdown fences, Kubrick can detect raw JSON tool calls (you'll see a warning).
+**Cannot reach the provider.** Check the URL (`host:port` is enough for local servers) with
+`curl <base_url>/models`. For a server on another machine, make sure it listens on `0.0.0.0`
+and the firewall allows the port (see [PROVIDERS.md](PROVIDERS.md#serving-from-a-windows-machine-to-linuxmacos)).
 
-**Test:** Run `pytest tests/test_tool_calling.py` to verify tool call detection.
+**Bedrock AccessDenied / expired token.** Enable the model in the Bedrock console, grant
+`bedrock:InvokeModelWithResponseStream`, and for SSO run `aws sso login --profile <name>`.
 
-**Model Requirements:** Use a capable model (GPT-4, Claude, Llama 3+, etc.) that can follow structured output instructions.
-
-### Connection Issues
-
-**Cannot connect to Triton:**
-
-1. Verify Triton is running:
-
-   ```bash
-   curl http://localhost:8000/v2/health/live
-   ```
-
-2. Check config:
-
-   ```bash
-   You: /config
-   ```
-
-3. Update URL:
-   ```bash
-   export TRITON_URL=localhost:8000
-   # or
-   You: /config triton_url localhost:8000
-   ```
-
-**Docker network issues:**
-
-- Ensure `--network host` mode is used
-- Triton must be accessible at `localhost:8000` on the host
-
-### File Access Issues (Docker)
-
-**Files not found:**
-
-1. Run Docker from your project directory:
-
-   ```bash
-   cd /path/to/project
-   ```
-
-2. Include working directory mount:
-
-   ```bash
-   -v ${PWD}:/workspace
-   ```
-
-3. Only files in the mounted directory are accessible
-
-**Permission Issues:**
-
-Files created as root? You forgot the `--user` flag!
-
-```bash
-# Wrong (creates root-owned files)
-docker run --rm -it --network host \
-  -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
-  rcland12/kubrick-cli
-
-# Correct (creates files owned by you)
-docker run --rm -it --network host --user $(id -u):$(id -g) \
-  -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
-  rcland12/kubrick-cli
-```
-
-**Easiest solution:** Use the `kubrick-docker` wrapper which handles this automatically.
-
-See [DOCKER.md](DOCKER.md) for detailed troubleshooting.
-
-## Example Sessions
-
-### Creating a New File
-
-````
-You: Create a Python script that sorts a list of numbers
-Assistant: I'll create a Python script to sort numbers for you.
-
-```tool_call
-{
-  "tool": "write_file",
-  "parameters": {
-    "file_path": "sort_numbers.py",
-    "content": "def sort_numbers(numbers):\n    return sorted(numbers)\n\nif __name__ == \"__main__\":\n    nums = [5, 2, 8, 1, 9]\n    print(f\"Original: {nums}\")\n    print(f\"Sorted: {sort_numbers(nums)}\")\n"
-  }
-}
-````
-
-✓ Created file: sort_numbers.py
-
-```
-
-### Searching Code
-
-```
-
-You: Find all TODO comments in Python files
-Assistant: Searching for TODO comments...
-
-```tool_call
-{"tool": "search_files", "parameters": {"pattern": "TODO", "file_pattern": "*.py"}}
-```
-
-Found 3 matches in 2 files.
-
-````
-
-## Development
-
-### Running Tests
-
-```bash
-pip install -e ".[dev]"
-pytest tests/
-pytest tests/test_triton.py
-pytest --cov=kubrick_cli tests/
-````
-
-### Project Structure
-
-```
-kubrick/
-├── kubrick_cli/          # Main package
-│   ├── main.py          # CLI entry point
-│   ├── config.py        # Configuration
-│   ├── triton_client.py # HTTP client
-│   └── tools.py         # Tool executor
-├── tests/               # Test suite
-├── pyproject.toml       # Package config
-└── Dockerfile           # Docker image
-```
-
-### Code Formatting
-
-```bash
-black kubrick_cli/
-```
-
-## How It Works
-
-1. You type questions or requests in natural language
-2. The AI analyzes your request and chooses appropriate tools
-3. Tools are executed automatically (reads, writes, searches, commands)
-4. Results are displayed and the AI continues the conversation
-5. All operations happen in your working directory
-6. Conversations are automatically saved to `~/.kubrick/conversations/`
-
-## Best Practices
-
-### For Users
-
-- Be specific in your requests
-- Let the AI use tools automatically (don't micromanage)
-- Use `/list` to find previous conversations
-- Configure Triton URL once with `/config` and forget it
-
-### For LLM Models
-
-- Use capable models (GPT-4, Claude 3.5+, Llama 3.1 70B+)
-- Ensure the model can follow structured output formats
-- Models should be trained on tool/function calling
-
-### For Triton Setup
-
-- See [TRITON.md](TRITON.md) for backend requirements
-- Use streaming-enabled models
-- Ensure proper SSE (Server-Sent Events) support
-
-## Contributing
-
-Contributions welcome\! Please ensure:
-
-- Tests pass: `pytest tests/`
-- Code is formatted: `black kubrick_cli/`
-- Documentation is updated
-
-## Links
-
-- [Triton Setup](TRITON.md)
-- [Docker Guide](DOCKER.md)
-- [GitHub Issues](https://github.com/yourusername/kubrick/issues)
+**The agent stopped with "Stopped after N model calls".** It hit `max_iterations`; reply
+"continue" or raise the limit.

@@ -462,3 +462,65 @@ class TestTritonLLMClientRequestPayload:
         assert len(text_input) == 2
         assert text_input[0]["role"] == "system"
         assert text_input[1]["role"] == "user"
+
+
+class TestTritonLLMClientRawTextOutput:
+    """Regression tests: raw-text tokens that happen to be valid JSON scalars."""
+
+    def _stream(self, mock_http_conn, lines):
+        payload = b"".join(
+            b"data: " + json.dumps({"text_output": line}).encode("utf-8") + b"\n"
+            for line in lines
+        )
+        mock_response = Mock()
+        mock_response.status = 200
+        queue = [payload]
+        mock_response.read = lambda size: queue.pop(0) if queue else b""
+
+        mock_conn_instance = Mock()
+        mock_conn_instance.getresponse.return_value = mock_response
+        mock_http_conn.return_value = mock_conn_instance
+
+        client = TritonLLMClient()
+        return list(client.generate_streaming([{"role": "user", "content": "x"}]))
+
+    @patch("http.client.HTTPConnection")
+    def test_scalar_json_tokens_are_text(self, mock_http_conn):
+        """Tokens like "42", "null", "true" must be yielded verbatim, not crash."""
+        chunks = self._stream(
+            mock_http_conn, ["The answer is ", "42", " ", "null", "true"]
+        )
+        assert chunks == ["The answer is ", "42", " ", "null", "true"]
+
+    @patch("http.client.HTTPConnection")
+    def test_json_object_without_type_is_text(self, mock_http_conn):
+        """A JSON object that isn't a protocol chunk is model text."""
+        chunks = self._stream(mock_http_conn, ['{"key": "value"}'])
+        assert chunks == ['{"key": "value"}']
+
+    @patch("http.client.HTTPConnection")
+    def test_mixed_protocol_and_raw(self, mock_http_conn):
+        """Protocol chunks and raw text can be interleaved; complete ends the stream."""
+        lines = [
+            json.dumps({"type": "chunk", "content": "a"}),
+            "b",
+            json.dumps({"type": "complete"}),
+            json.dumps({"type": "chunk", "content": "ignored"}),
+        ]
+        assert self._stream(mock_http_conn, lines) == ["a", "b"]
+
+    @patch("http.client.HTTPConnection")
+    def test_scalar_sse_line_ignored(self, mock_http_conn):
+        """A data line that is itself a bare JSON scalar is skipped, not a crash."""
+        mock_response = Mock()
+        mock_response.status = 200
+        queue = [b"data: 42\n", b'data: {"text_output": "ok"}\n']
+        mock_response.read = lambda size: queue.pop(0) if queue else b""
+        mock_conn_instance = Mock()
+        mock_conn_instance.getresponse.return_value = mock_response
+        mock_http_conn.return_value = mock_conn_instance
+
+        client = TritonLLMClient()
+        assert list(client.generate_streaming([{"role": "user", "content": "x"}])) == [
+            "ok"
+        ]

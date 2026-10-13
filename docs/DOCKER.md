@@ -102,7 +102,7 @@ cd /path/to/your/project
 kubrick-docker
 
 # With arguments
-kubrick-docker --triton-url my-server:8000
+kubrick-docker --provider anthropic --model claude-sonnet-5-5
 kubrick-docker --load 20240118_143022
 ```
 
@@ -222,8 +222,9 @@ docker run --rm -it \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
-  rcland12/kubrick-cli \
-  --triton-url my-server:8000
+  -e KUBRICK_PROVIDER=triton \
+  -e KUBRICK_TRITON_URL=my-server:8000 \
+  rcland12/kubrick-cli
 ```
 
 ### Load Previous Conversation
@@ -251,7 +252,7 @@ docker run --rm -it \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
   rcland12/kubrick-cli \
-  --model-name my-llm-model
+  --model my-llm-model
 ```
 
 ## Understanding the Command
@@ -290,7 +291,8 @@ docker run ... rcland12/kubrick-cli [kubrick arguments]
 # Custom Triton URL
 docker run --rm -it --network host --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
-  rcland12/kubrick-cli --triton-url server:8000
+  -e KUBRICK_PROVIDER=triton -e KUBRICK_TRITON_URL=server:8000 \
+  rcland12/kubrick-cli
 
 # Load conversation
 docker run --rm -it --network host --user $(id -u):$(id -g) \
@@ -300,14 +302,17 @@ docker run --rm -it --network host --user $(id -u):$(id -g) \
 # Multiple arguments
 docker run --rm -it --network host --user $(id -u):$(id -g) \
   -v ${HOME}:/home/kubrick -v ${PWD}:/workspace \
-  rcland12/kubrick-cli --triton-url server:8000 --model-name custom-model
+  rcland12/kubrick-cli --provider openai_compatible --model qwen3-coder:30b
 ```
 
 ## Configuration
 
 ### Using Environment Variables
 
-Override defaults with environment variables:
+Any setting can be overridden with a `KUBRICK_<SETTING>` environment variable (e.g.
+`KUBRICK_TRITON_URL`, `KUBRICK_OPENAI_COMPATIBLE_MODEL`), and API keys can come from
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENAI_COMPATIBLE_API_KEY`. Setting
+`KUBRICK_PROVIDER` also skips the first-run setup wizard:
 
 ```bash
 docker run --rm -it \
@@ -317,10 +322,16 @@ docker run --rm -it \
   -v ${PWD}:/workspace \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
-  -e TRITON_URL=my-server:8000 \
-  -e TRITON_MODEL_NAME=custom-model \
+  -e KUBRICK_PROVIDER=openai_compatible \
+  -e KUBRICK_OPENAI_COMPATIBLE_BASE_URL=http://gpu-box:11434/v1 \
+  -e KUBRICK_OPENAI_COMPATIBLE_MODEL=qwen3-coder:30b \
+  -e ANTHROPIC_API_KEY \
   rcland12/kubrick-cli
 ```
+
+The `kubrick-docker` wrapper doesn't pass environment variables into the container. With
+the wrapper, store keys with `kubrick-docker auth login <provider>` (they're kept,
+encrypted, in the mounted `~/.kubrick`) or use `docker run` directly as above.
 
 ### Config File
 
@@ -335,6 +346,14 @@ You: exit
 # Future runs use saved config automatically
 docker run ... rcland12/kubrick-cli
 ```
+
+### Credentials in Docker
+
+Keys stored with `kubrick auth login` go to `~/.kubrick/credentials.json` (encrypted with a
+machine-bound key). Containers usually have no OS machine ID, so the container gets its own
+credential slot: you log in once inside the container, separately from the host. Passing
+keys as environment variables (`-e ANTHROPIC_API_KEY`) avoids this. See
+[SECURITY.md](SECURITY.md#credential-storage).
 
 ## File Access
 
@@ -484,7 +503,7 @@ docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick
 
 ```bash
 cd ~/dev/your-project
-docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick --triton-url my-server:8000
+docker compose -f ~/dev/kubrick-cli/docker-compose.yaml run --rm kubrick --provider triton
 ```
 
 ### Usage from kubrick-cli Directory
@@ -523,7 +542,7 @@ source ~/.bashrc  # or source ~/.zshrc
 ```bash
 cd ~/dev/any-project
 kubrick
-kubrick --triton-url my-server:8000
+kubrick --provider triton
 kubrick --load 20240118_143022
 ```
 
@@ -536,11 +555,26 @@ kubrick --load 20240118_143022
 - The `${UID}:${GID}` in docker-compose.yaml ensures files are owned by you
 - Configuration and conversation history are shared across all projects via `~/.kubrick`
 
+## Updating
+
+`kubrick update` inside a container only tells you what to run, since the container can't
+replace its own image. On the host:
+
+```bash
+docker pull rcland12/kubrick-cli:latest     # or ghcr.io/rcland12/kubrick-cli:latest
+```
+
+## Development sandbox
+
+For working on Kubrick itself, `make sandbox` (see [CONTRIBUTING.md](../CONTRIBUTING.md))
+builds `docker/sandbox.Dockerfile` and runs your checkout's code in a container that can
+only see the project directory, so anything the agent installs stays inside it.
+
 ## Troubleshooting
 
 ### Cannot Connect to Triton
 
-**Error:** `Cannot connect to Triton server at localhost:8000`
+**Error:** `Triton (localhost:8000): ...` (connection refused or timed out)
 
 **Solutions:**
 
@@ -558,7 +592,7 @@ kubrick --load 20240118_143022
 
 3. Use custom URL if Triton is not on localhost:
    ```bash
-   docker run ... rcland12/kubrick-cli --triton-url my-server:8000
+   docker run ... -e KUBRICK_TRITON_URL=my-server:8000 rcland12/kubrick-cli --provider triton
    ```
 
 ### Files Not Found
@@ -654,7 +688,7 @@ source ~/.bashrc  # or source ~/.zshrc
 ```bash
 cd /path/to/project
 kubrick
-kubrick --triton-url my-server:8000
+kubrick --provider triton
 kubrick --load 20240118_143022
 ```
 
@@ -663,5 +697,5 @@ kubrick --load 20240118_143022
 ## Requirements
 
 - Docker 20.10+
-- Triton server accessible at `localhost:8000` (or custom URL)
+- A reachable model backend (local OpenAI-compatible server, Triton, or API credentials)
 - Project directory with files you want to work on

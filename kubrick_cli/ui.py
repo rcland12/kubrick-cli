@@ -1,342 +1,312 @@
-"""Enhanced UI components for Kubrick CLI."""
+"""Interactive prompt, status bar, and permission prompts."""
 
+import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.completion import Completer, Completion, ThreadedCompleter
+from prompt_toolkit.enums import EditingMode
+from prompt_toolkit.filters import has_completions
+from prompt_toolkit.formatted_text import HTML, FormattedText
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
-from rich.console import Console
 
-console = Console()
+from .permissions import PromptAnswer
+from .widgets import Choice, ask_text, dim_style, select, silence_cpr_warning
 
 
 class SessionStats:
-    """Track statistics for the current session."""
+    """Counters for the current session, shown in the status bar."""
 
     def __init__(self):
-        """Initialize session statistics."""
         self.start_time = time.time()
         self.files_created = 0
         self.files_modified = 0
-        self.files_read = 0
         self.lines_added = 0
         self.lines_deleted = 0
         self.tool_calls = 0
         self.commands_executed = 0
-        self.total_tokens = 0
-        self.input_chars = 0
-        self.iterations = 0
-        self.running_status = None  # Status message like "Agent running..." or None
-        self._spinner_index = 0
-        self._spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cache_read_tokens = 0
 
-    def get_spinner(self) -> str:
-        """Get next spinner character for animation."""
-        char = self._spinner_chars[self._spinner_index]
-        self._spinner_index = (self._spinner_index + 1) % len(self._spinner_chars)
-        return char
+    def record_usage(self, usage):
+        """Accumulate provider-reported token usage."""
+        self.input_tokens += usage.input_tokens + usage.cache_write_tokens
+        self.output_tokens += usage.output_tokens
+        self.cache_read_tokens += usage.cache_read_tokens
+
+    def record_tool(self, tool_name: str, args: Dict[str, Any], result: Dict[str, Any]):
+        """Update counters after a tool ran."""
+        self.tool_calls += 1
+        if not result.get("success"):
+            return
+        if tool_name == "write_file":
+            if str(result.get("result", "")).startswith("Created"):
+                self.files_created += 1
+            else:
+                self.files_modified += 1
+            self.lines_added += args.get("content", "").count("\n") + 1
+        elif tool_name == "edit_file":
+            self.files_modified += 1
+            old = args.get("old_string", "").count("\n") + 1
+            new = args.get("new_string", "").count("\n") + 1
+            self.lines_added += max(new - old, 0)
+            self.lines_deleted += max(old - new, 0)
+        elif tool_name == "run_bash":
+            self.commands_executed += 1
 
     def get_runtime(self) -> str:
-        """Get formatted runtime."""
-        elapsed = time.time() - self.start_time
-        hours = int(elapsed // 3600)
-        minutes = int((elapsed % 3600) // 60)
-        seconds = int(elapsed % 60)
-
-        if hours > 0:
-            return f"{hours}h {minutes}m {seconds}s"
-        elif minutes > 0:
+        elapsed = int(time.time() - self.start_time)
+        hours, rem = divmod(elapsed, 3600)
+        minutes, seconds = divmod(rem, 60)
+        if hours:
+            return f"{hours}h {minutes}m"
+        if minutes:
             return f"{minutes}m {seconds}s"
-        else:
-            return f"{seconds}s"
-
-    def get_file_changes(self) -> str:
-        """Get summary of file changes."""
-        if self.files_created == 0 and self.files_modified == 0:
-            return "No changes"
-
-        parts = []
-        if self.files_created > 0:
-            parts.append(f"+{self.files_created} created")
-        if self.files_modified > 0:
-            parts.append(f"~{self.files_modified} modified")
-        return ", ".join(parts)
-
-    def get_code_changes(self) -> str:
-        """Get summary of code changes."""
-        if self.lines_added == 0 and self.lines_deleted == 0:
-            return "0"
-
-        parts = []
-        if self.lines_added > 0:
-            parts.append(f"+{self.lines_added}")
-        if self.lines_deleted > 0:
-            parts.append(f"-{self.lines_deleted}")
-        return " ".join(parts)
+        return f"{seconds}s"
 
 
-class EnhancedPrompt:
-    """Enhanced prompt with multiline support and status bar."""
+@dataclass
+class SlashCommand:
+    """A slash command, for /help and the completion menu."""
+
+    name: str
+    description: str
+    args: str = ""
+    # Choosing it from the menu waits for an argument instead of running it.
+    needs_arg: bool = False
+
+
+class SlashCompleter(Completer):
+    """Completes /commands (and their first argument) at the start of the input."""
 
     def __init__(
         self,
-        working_dir: str,
-        stats: SessionStats,
-        context_manager=None,
-        conversation_id: str = "",
+        commands: List[SlashCommand],
+        argument_choices: Optional[Callable[[str], List[Tuple[str, str]]]] = None,
     ):
         """
-        Initialize enhanced prompt.
-
         Args:
-            working_dir: Current working directory
-            stats: Session statistics object
-            context_manager: Optional context manager for token info
-            conversation_id: Current conversation ID
+            commands: Known commands
+            argument_choices: ``argument_choices("/model") -> [(value, description)]``
         """
-        self.working_dir = working_dir
-        self.stats = stats
-        self.context_manager = context_manager
-        self.conversation_id = conversation_id
-        self.current_input_length = 0
+        self.commands = commands
+        self.argument_choices = argument_choices
 
-        # Create custom key bindings
-        self.key_bindings = self._create_key_bindings()
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/") or "\n" in text:
+            return
+        if " " not in text:
+            typed = text.lower()
+            for command in self.commands:
+                if command.name.startswith(typed):
+                    display = command.name + (
+                        f" {command.args}" if command.args else ""
+                    )
+                    yield Completion(
+                        command.name,
+                        start_position=-len(text),
+                        display=display,
+                        display_meta=command.description,
+                    )
+            return
+        name, _, partial = text.partition(" ")
+        if " " in partial.lstrip() or self.argument_choices is None:
+            return
+        partial = partial.lstrip()
+        try:
+            options = self.argument_choices(name.lower())
+        except Exception:
+            return
+        for value, description in options:
+            if value.lower().startswith(partial.lower()):
+                yield Completion(
+                    value, start_position=-len(partial), display_meta=description
+                )
 
-        # Create prompt style (NO background colors, only text colors)
+
+class EnhancedPrompt:
+    """Multiline input with history, a status bar, and a /command menu."""
+
+    def __init__(
+        self,
+        status_provider: Callable[[], Dict[str, str]],
+        history_file: Path,
+        commands: Optional[List[SlashCommand]] = None,
+        argument_choices: Optional[Callable[[str], List[Tuple[str, str]]]] = None,
+        editing_mode: str = "emacs",
+    ):
+        """
+        Args:
+            status_provider: Returns the fields shown in the status bar
+            history_file: Where input history is persisted
+            commands: Slash commands offered when the input starts with "/"
+            argument_choices: Completions for a command's argument (see SlashCompleter)
+            editing_mode: "emacs" (default) or "vi" key bindings
+        """
+        self.status_provider = status_provider
+        self.commands = {c.name: c for c in commands or []}
+        dim = dim_style()
         self.style = Style.from_dict(
             {
-                "bottom-toolbar": "bg:default fg:default noreverse",
-                "bottom-toolbar.text": "bg:default fg:default noreverse",
+                "bottom-toolbar": "bg:default fg:#888888 noreverse",
                 "prompt": "bold green",
-                "separator": "fg:#666666 bg:default noreverse",
-                "statusbar": "fg:#888888 nobold noitalic nounderline noreverse",
-                "statusbar.help": "fg:#5dade2 nobold noitalic nounderline noreverse",
-                "statusbar.time": "fg:#f39c12 nobold noitalic nounderline noreverse",
-                "statusbar.iterations": "fg:#9b59b6 nobold noitalic nounderline noreverse",
-                "statusbar.tools": "fg:#e74c3c nobold noitalic nounderline noreverse",
-                "statusbar.files": "fg:#3498db nobold noitalic nounderline noreverse",
-                "statusbar.lines": "fg:#2ecc71 nobold noitalic nounderline noreverse",
-                "statusbar.tokens": "fg:#e67e22 nobold noitalic nounderline noreverse",
-                "statusbar.chars": "fg:#95a5a6 nobold noitalic nounderline noreverse",
-                "statusbar.directory": "fg:#1abc9c nobold noitalic nounderline noreverse",
+                "placeholder": dim,
+                "sb.model": "fg:#5dade2",
+                "sb.mode": "fg:#f39c12",
+                "sb.ctx": "fg:#2ecc71",
+                "sb.dir": "fg:#1abc9c",
+                # A plain list rather than the default grey box.
+                "completion-menu": "bg:default",
+                "completion-menu.completion": "bg:default fg:default",
+                "completion-menu.completion.current": "bg:default fg:ansicyan bold",
+                "completion-menu.meta.completion": f"bg:default {dim}",
+                "completion-menu.meta.completion.current": "bg:default fg:ansicyan",
+                "scrollbar.background": "bg:default",
+                "scrollbar.button": "bg:ansibrightblack",
             }
         )
-
-        # Create prompt session
+        try:
+            history = FileHistory(str(history_file))
+        except OSError:
+            history = None
+        completer = None
+        if commands:
+            completer = ThreadedCompleter(SlashCompleter(commands, argument_choices))
         self.session = PromptSession(
-            multiline=True,  # Allow multiline editing, Enter submits, Alt+Enter for newlines
-            key_bindings=self.key_bindings,
+            multiline=True,
+            key_bindings=self._key_bindings(),
             style=self.style,
-            bottom_toolbar=self._get_bottom_toolbar,
-            enable_history_search=True,
-            complete_while_typing=False,
-            mouse_support=False,  # Disable to allow terminal scrolling
+            bottom_toolbar=self._toolbar,
+            history=history,
+            # Must stay off: prompt_toolkit disables complete-while-typing with it.
+            enable_history_search=False,
+            mouse_support=False,
+            completer=completer,
+            complete_while_typing=True,
+            reserve_space_for_menu=6,
+            placeholder=FormattedText(
+                [("class:placeholder", "Type a message, or / for commands")]
+            ),
+            editing_mode=EditingMode.VI if editing_mode == "vi" else EditingMode.EMACS,
         )
+        silence_cpr_warning(self.session.app)
 
-    def _create_key_bindings(self) -> KeyBindings:
-        """Create custom key bindings."""
+    def _key_bindings(self) -> KeyBindings:
         kb = KeyBindings()
 
-        # Enter always submits (like Claude Code)
         @kb.add("enter")
         def _(event):
-            """Handle Enter key - always submit."""
+            """Enter submits, or runs the command highlighted in the menu."""
             buffer = event.app.current_buffer
-            if buffer.text.strip():  # Only submit if there's text
-                buffer.validate_and_handle()
-
-        @kb.add("c-d")
-        def _(event):
-            """Ctrl+D also submits the input."""
-            buffer = event.app.current_buffer
+            state = buffer.complete_state
+            if state and state.current_completion:
+                buffer.apply_completion(state.current_completion)
+                command = self.commands.get(buffer.text.strip())
+                if command and command.needs_arg:
+                    buffer.insert_text(" ")
+                    buffer.start_completion(select_first=False)
+                    return
             if buffer.text.strip():
                 buffer.validate_and_handle()
 
+        @kb.add("escape", filter=has_completions)
+        def _(event):
+            """Esc closes the menu (and undoes a highlighted completion)."""
+            event.app.current_buffer.cancel_completion()
+
         @kb.add("escape", "enter")
         def _(event):
-            """Alt+Enter adds a new line (for multiline input)."""
+            """Alt+Enter (or Esc then Enter) inserts a newline."""
+            event.app.current_buffer.insert_text("\n")
+
+        @kb.add("c-j")
+        def _(event):
+            """Ctrl+J inserts a newline (works in terminals without Alt)."""
             event.app.current_buffer.insert_text("\n")
 
         return kb
 
-    def _continuation_prompt(self, width, line_number, is_soft_wrap):
-        """Prompt for continuation lines."""
-        return HTML("<prompt>... </prompt>")
-
-    def _get_bottom_toolbar(self):
-        """Generate bottom toolbar with status information."""
-        # Update input length
+    def _toolbar(self):
         try:
-            from prompt_toolkit import get_app
-
-            app = get_app()
-            if app and app.current_buffer:
-                self.current_input_length = len(app.current_buffer.text)
+            status = self.status_provider()
         except Exception:
-            pass
-
-        # Get stats
-        runtime = self.stats.get_runtime()
-
-        # Get working directory (shortened)
-        work_dir = self.working_dir
+            return ""
         try:
-            work_dir = Path(work_dir).name or work_dir
-            if len(work_dir) > 30:
-                work_dir = "..." + work_dir[-27:]
-        except Exception:
-            pass
+            width = os.get_terminal_size().columns
+        except OSError:
+            width = 100
+        parts = [
+            ("class:sb.model", status.get("model", "")),
+            ("", "  "),
+            ("class:sb.mode", status.get("mode", "")),
+            ("", "  "),
+            ("class:sb.ctx", status.get("context", "")),
+            ("", "  "),
+            ("", status.get("stats", "")),
+        ]
+        left = sum(len(t) for _, t in parts)
+        directory = f"  {status.get('dir', '')}"
+        pad = max(width - left - len(directory) - 1, 1)
+        parts += [("", " " * pad), ("class:sb.dir", directory)]
+        return parts
 
-        # Get terminal width for separator line
+    def get_input(self, prompt_text: str = ">") -> str:
+        """Read one message. Ctrl+D on empty input returns "exit"."""
         try:
-            import os
-
-            term_width = os.get_terminal_size().columns
-        except Exception:
-            term_width = 120
-
-        # Build toolbar sections with unique colors for each stat
-        toolbar_parts = []
-
-        # Thin separator line above (using lower one-eighth block for minimal visual weight)
-        toolbar_parts.append(("class:separator", "_" * term_width + "\n"))
-
-        # Running status (if agent is active)
-        if self.stats.running_status:
-            spinner = self.stats.get_spinner()
-            toolbar_parts.extend(
-                [
-                    (
-                        "class:statusbar.help",
-                        f"{spinner} {self.stats.running_status}  ",
-                    ),
-                ]
-            )
-        else:
-            # Help section (left) - only show when not running
-            toolbar_parts.extend(
-                [
-                    ("class:statusbar.help", "Type /help for options"),
-                ]
-            )
-
-        # Stats section (center)
-        stats_parts = []
-
-        if self.stats.iterations > 0:
-            stats_parts.append(
-                (
-                    "class:statusbar.iterations",
-                    f"  Iterations: {self.stats.iterations}",
-                )
-            )
-
-        if self.stats.tool_calls > 0:
-            stats_parts.append(
-                ("class:statusbar.tools", f"  Tools: {self.stats.tool_calls}")
-            )
-
-        if self.stats.files_created > 0 or self.stats.files_modified > 0:
-            file_str = []
-            if self.stats.files_created > 0:
-                file_str.append(f"+{self.stats.files_created}")
-            if self.stats.files_modified > 0:
-                file_str.append(f"~{self.stats.files_modified}")
-            stats_parts.append(
-                ("class:statusbar.files", f"  Files: {' '.join(file_str)}")
-            )
-
-        if self.stats.lines_added > 0 or self.stats.lines_deleted > 0:
-            lines_str = []
-            if self.stats.lines_added > 0:
-                lines_str.append(f"+{self.stats.lines_added}")
-            if self.stats.lines_deleted > 0:
-                lines_str.append(f"-{self.stats.lines_deleted}")
-            stats_parts.append(
-                ("class:statusbar.lines", f"  Lines: {' '.join(lines_str)}")
-            )
-
-        if self.stats.total_tokens > 0:
-            stats_parts.append(
-                (
-                    "class:statusbar.tokens",
-                    f"  Tokens: {self.stats.total_tokens}",
-                )
-            )
-
-        stats_parts.append(("class:statusbar.time", f"  Runtime: {runtime}"))
-
-        if self.current_input_length > 0:
-            stats_parts.append(
-                (
-                    "class:statusbar.chars",
-                    f"  Chars: {self.current_input_length}",
-                )
-            )
-
-        toolbar_parts.extend(stats_parts)
-
-        # Directory section (right)
-        # Calculate spacing to right-align directory
-        left_text = "Type /help for options"
-        stats_text = "".join(text for _, text in stats_parts)
-        right_text = f"  Dir: {work_dir}"
-
-        used_space = len(left_text) + len(stats_text) + len(right_text)
-        remaining = term_width - used_space
-
-        if remaining > 0:
-            toolbar_parts.append(("class:statusbar", " " * remaining))
-
-        toolbar_parts.extend(
-            [
-                ("class:statusbar.directory", f"  Dir: {work_dir}"),
-            ]
-        )
-
-        return toolbar_parts
-
-    def get_input(self, prompt_text: str = "You") -> str:
-        """
-        Get user input with enhanced multiline support.
-
-        Args:
-            prompt_text: Text to display in the prompt
-
-        Returns:
-            User input string
-        """
-        try:
-            user_input = self.session.prompt(
-                HTML(f"<prompt>{prompt_text}> </prompt>"),
-            )
-            return user_input.strip()
-        except KeyboardInterrupt:
-            raise
+            return self.session.prompt(HTML(f"<prompt>{prompt_text} </prompt>")).strip()
         except EOFError:
-            # Ctrl+D on empty input means exit
             return "exit"
 
 
-def create_enhanced_prompt(
-    working_dir: str,
-    stats: SessionStats,
-    context_manager=None,
-    conversation_id: str = "",
-) -> EnhancedPrompt:
-    """
-    Create an enhanced prompt instance.
+def make_permission_prompt(renderer) -> Callable[..., PromptAnswer]:
+    """Interactive permission prompt used by PermissionManager."""
 
-    Args:
-        working_dir: Current working directory
-        stats: Session statistics
-        context_manager: Optional context manager
-        conversation_id: Current conversation ID
+    def prompt(
+        title: str,
+        detail: str,
+        warning: Optional[str] = None,
+        always: bool = True,
+        rule: Optional[str] = None,
+    ) -> PromptAnswer:
+        renderer.permission_panel(title, detail, warning)
+        choices = [Choice("y", "Yes", key="y")]
+        if always:
+            scope = f"'{rule}' commands" if rule else "file edits"
+            choices.append(
+                Choice(
+                    "a", f"Yes, and allow {scope} for the rest of this session", key="a"
+                )
+            )
+        choices.append(Choice("n", "No, and tell Kubrick what to do instead", key="n"))
+        try:
+            answer = select("Allow?", choices, default="y")
+        except (KeyboardInterrupt, EOFError):
+            answer = None
+        if answer is None:
+            return PromptAnswer(
+                False, "The user interrupted and denied this action.", stop=True
+            )
+        if answer in ("y", "a"):
+            return PromptAnswer(True, always=answer == "a")
+        try:
+            feedback = ask_text("What should Kubrick do instead? (Enter to stop)")
+        except (KeyboardInterrupt, EOFError):
+            feedback = ""
+        if feedback:
+            return PromptAnswer(
+                False, f"The user denied this action and said: {feedback}"
+            )
+        return PromptAnswer(
+            False,
+            "The user denied this action. Wait for their next instruction.",
+            stop=True,
+        )
 
-    Returns:
-        EnhancedPrompt instance
-    """
-    return EnhancedPrompt(working_dir, stats, context_manager, conversation_id)
+    return prompt

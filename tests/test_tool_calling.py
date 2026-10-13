@@ -1,126 +1,104 @@
-#!/usr/bin/env python3
-"""Test tool calling parsing."""
+"""Tests for the text-based tool calling protocol."""
 
-from kubrick_cli.main import KubrickCLI
-from kubrick_cli.config import KubrickConfig
+from kubrick_cli.messages import ToolSpec
+from kubrick_cli.tool_protocol import (
+    parse_tool_calls,
+    render_tools_prompt,
+    strip_tool_calls,
+    to_plain_messages,
+)
 
 
-def test_tool_call_parsing():
-    """Test that tool call parsing works correctly."""
-    print("\n" + "=" * 60)
-    print("Testing Tool Call Parsing")
-    print("=" * 60 + "\n")
-
-    config = KubrickConfig(skip_wizard=True)
-    cli = KubrickCLI(config=config)
-
-    print("1. Testing correct format with ```tool_call fence...")
-    text1 = """I'll read that file for you.
+def test_parses_fenced_calls():
+    text = """I'll read it.
 
 ```tool_call
-{
-  "tool": "read_file",
-  "parameters": {
-    "file_path": "test.py"
-  }
-}
+{"tool": "read_file", "parameters": {"file_path": "test.py"}}
 ```
-"""
-    tool_calls = cli.parse_tool_calls(text1)
-    assert len(tool_calls) == 1, f"Expected 1 tool call, got {len(tool_calls)}"
-    assert (
-        tool_calls[0][0] == "read_file"
-    ), f"Expected read_file, got {tool_calls[0][0]}"
-    assert tool_calls[0][1]["file_path"] == "test.py"
-    print("   ✓ Correctly parsed tool call with markdown fence")
-
-    print("\n2. Testing multiple tool calls...")
-    text2 = """I'll read the file first:
-
-```tool_call
-{
-  "tool": "read_file",
-  "parameters": {
-    "file_path": "config.txt"
-  }
-}
-```
-
-Then I'll write a new file:
 
 ```tool_call
 {
   "tool": "write_file",
-  "parameters": {
-    "file_path": "output.txt",
-    "content": "Hello World"
-  }
+  "parameters": {"file_path": "out.txt", "content": "hi",},
 }
 ```
 """
-    tool_calls = cli.parse_tool_calls(text2)
-    assert len(tool_calls) == 2, f"Expected 2 tool calls, got {len(tool_calls)}"
-    assert tool_calls[0][0] == "read_file"
-    assert tool_calls[1][0] == "write_file"
-    print("   ✓ Correctly parsed multiple tool calls")
-
-    print("\n3. Testing fallback parser (missing markdown fence)...")
-    text3 = """Here's the tool call:
-
-{
-  "tool": "list_files",
-  "parameters": {
-    "pattern": "*.py"
-  }
-}
-"""
-    tool_calls = cli.parse_tool_calls(text3)
-    assert len(tool_calls) == 1, f"Expected 1 tool call, got {len(tool_calls)}"
-    assert tool_calls[0][0] == "list_files"
-    print("   ✓ Fallback parser correctly detected tool call without fence")
-
-    print("\n4. Testing text without tool calls...")
-    text4 = "This is just regular text without any tool calls."
-    tool_calls = cli.parse_tool_calls(text4)
-    assert len(tool_calls) == 0, f"Expected 0 tool calls, got {len(tool_calls)}"
-    print("   ✓ Correctly returned empty list for text without tool calls")
-
-    print("\n5. Testing real example from conversation.log...")
-    text5 = """{
-  "tool": "read_file",
-  "parameters": {
-    "file_path": "repository/llm_decoupled/config.pbtxt"
-  }
-}"""
-    tool_calls = cli.parse_tool_calls(text5)
-    assert len(tool_calls) == 1, f"Expected 1 tool call, got {len(tool_calls)}"
-    assert tool_calls[0][0] == "read_file"
-    assert tool_calls[0][1]["file_path"] == "repository/llm_decoupled/config.pbtxt"
-    print("   ✓ Successfully parsed the problematic example from conversation.log")
-
-    print("\n" + "=" * 60)
-    print("All tests PASSED! ✓")
-    print("=" * 60 + "\n")
-    print("Tool calling parsing is working correctly!")
-    print("Both primary parser (with markdown fence) and fallback parser")
-    print("(without fence) are functioning as expected.\n")
+    calls = parse_tool_calls(text)
+    assert [c.name for c in calls] == ["read_file", "write_file"]
+    assert calls[0].arguments == {"file_path": "test.py"}
+    assert calls[1].arguments["content"] == "hi"  # trailing commas tolerated
+    assert calls[0].id != calls[1].id
 
 
-if __name__ == "__main__":
-    import sys
+def test_bare_json_fallback():
+    calls = parse_tool_calls(
+        '{"tool": "list_files", "parameters": {"pattern": "*.py"}}'
+    )
+    assert len(calls) == 1 and calls[0].name == "list_files"
 
-    try:
-        success = test_tool_call_parsing()
-        sys.exit(0 if success else 1)
-    except AssertionError as e:
-        print(f"\n✗ Test failed: {e}")
-        import traceback
 
-        print(traceback.format_exc())
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n✗ Unexpected error: {e}")
-        import traceback
+def test_no_calls_in_plain_text():
+    assert parse_tool_calls("Just text, no tools.") == []
 
-        print(traceback.format_exc())
-        sys.exit(1)
+
+def test_invalid_json_becomes_parse_error():
+    calls = parse_tool_calls("```tool_call\n{not json}\n```")
+    assert len(calls) == 1 and calls[0].parse_error
+
+
+def test_strip_tool_calls():
+    text = 'Before\n```tool_call\n{"tool": "x", "parameters": {}}\n```\nAfter'
+    assert strip_tool_calls(text) == "Before\n\nAfter"
+
+
+def test_to_plain_messages_flattens_tool_structure():
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "do it"},
+        {
+            "role": "assistant",
+            "content": "Reading.",
+            "tool_calls": [
+                {"id": "1", "name": "read_file", "arguments": {"file_path": "a"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "1", "name": "read_file", "content": "data"},
+        {
+            "role": "tool",
+            "tool_call_id": "2",
+            "name": "run_bash",
+            "content": "boom",
+            "is_error": True,
+        },
+        {"role": "assistant", "content": "Done."},
+    ]
+    plain = to_plain_messages(messages)
+    assert [m["role"] for m in plain] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert (
+        "```tool_call" in plain[2]["content"] and '"read_file"' in plain[2]["content"]
+    )
+    assert (
+        "Result: data" in plain[3]["content"] and "Error: boom" in plain[3]["content"]
+    )
+    # Round trip: the flattened call parses back.
+    assert parse_tool_calls(plain[2]["content"])[0].arguments == {"file_path": "a"}
+
+
+def test_render_tools_prompt_lists_parameters():
+    spec = ToolSpec(
+        "read_file",
+        "Read a file",
+        {
+            "type": "object",
+            "properties": {"file_path": {"type": "string", "description": "path"}},
+            "required": ["file_path"],
+        },
+    )
+    prompt = render_tools_prompt([spec])
+    assert "### read_file" in prompt and "`file_path` (string, required)" in prompt

@@ -4,17 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kubrick-cli"
-version = "0.1.6"
-description = "A CLI tool for AI-assisted coding using Triton LLM backend"
+version = "0.2.0"
+description = "Agentic coding CLI for local models (Ollama, vLLM, llama.cpp), Anthropic, OpenAI, Bedrock, and Triton"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
     {name = "Russell Land", email = "rcland12@gmail.com"}
 ]
 dependencies = [
     "rich>=13.0.0",
-    "prompt_toolkit>=3.0.0",
+    "prompt_toolkit>=3.0.36",
+    "cryptography>=42.0.0",
 ]
 
 [project.urls]
@@ -26,7 +27,11 @@ Issues = "https://github.com/rcland12/kubrick-cli/issues"
 kubrick = "kubrick_cli.main:main"
 
 [project.optional-dependencies]
+bedrock = ["boto3>=1.34.0"]
+keyring = ["keyring>=24.0.0"]
+all = ["boto3>=1.34.0", "keyring>=24.0.0"]
 dev = [
+    "boto3>=1.34.0",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",

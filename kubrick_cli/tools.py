@@ -1,11 +1,15 @@
 """Tool definitions and execution handlers."""
 
+import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
-# Directories to always exclude from list_files and search_files
-# These are typically large, irrelevant, or auto-generated
+from .messages import ToolSpec
+
+# Directories always excluded from list_files and search_files.
 EXCLUDED_DIRECTORIES = {
     ".git",
     ".hg",
@@ -24,7 +28,7 @@ EXCLUDED_DIRECTORIES = {
     "dist",
     ".next",
     ".nuxt",
-    "target",  # Rust/Java builds
+    "target",
     ".gradle",
     ".idea",
     ".vscode",
@@ -33,18 +37,33 @@ EXCLUDED_DIRECTORIES = {
     ".terraform",
 }
 
+DEFAULT_READ_LIMIT = 2000
+MAX_LINE_CHARS = 2000
+MAX_OUTPUT_CHARS = 30000
+
 TOOL_DEFINITIONS = [
     {
         "name": "read_file",
-        "description": "Read the contents of a file from the filesystem",
+        "description": (
+            "Read a text file. Returns lines prefixed with line numbers (`   12\\tcode`). "
+            f"Reads up to {DEFAULT_READ_LIMIT} lines by default; use offset/limit for "
+            "large files. Always read a file before editing it."
+        ),
         "read_only": True,
-        "estimated_duration": 1,
         "parameters": {
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The absolute or relative path to the file to read",
+                    "description": "Path to the file (absolute or relative to the working dir)",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "1-based line number to start reading from",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to read",
                 },
             },
             "required": ["file_path"],
@@ -53,23 +72,18 @@ TOOL_DEFINITIONS = [
     {
         "name": "write_file",
         "description": (
-            "Write content to a file (creates or overwrites). "
-            "After writing Python scripts, immediately run them with run_bash. "
-            "After creating files, verify with list_files or read_file."
+            "Create a file or overwrite it entirely with the given content. Prefer edit_file "
+            "for changes to existing files. Parent directories are created as needed."
         ),
         "read_only": False,
-        "estimated_duration": 2,
         "parameters": {
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The absolute or relative path to the file to write",
+                    "description": "Path to the file to write",
                 },
-                "content": {
-                    "type": "string",
-                    "description": "The content to write to the file",
-                },
+                "content": {"type": "string", "description": "The full file content"},
             },
             "required": ["file_path", "content"],
         },
@@ -77,26 +91,27 @@ TOOL_DEFINITIONS = [
     {
         "name": "edit_file",
         "description": (
-            "Edit a file by replacing a specific string with new content. "
-            "Must read the file first to see current contents. "
-            "After editing, verify changes if needed."
+            "Replace an exact string in a file. old_string must match the file exactly "
+            "(including indentation) and be unique unless replace_all is true; include "
+            "surrounding lines to make it unique. Read the file first. Do not include the "
+            "line-number prefixes from read_file output."
         ),
         "read_only": False,
-        "estimated_duration": 2,
         "parameters": {
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The path to the file to edit",
+                    "description": "Path to the file to edit",
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "The exact string to find and replace",
+                    "description": "Exact text to replace",
                 },
-                "new_string": {
-                    "type": "string",
-                    "description": "The new string to replace with",
+                "new_string": {"type": "string", "description": "Replacement text"},
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence (default false)",
                 },
             },
             "required": ["file_path", "old_string", "new_string"],
@@ -105,26 +120,17 @@ TOOL_DEFINITIONS = [
     {
         "name": "list_files",
         "description": (
-            "List files matching a glob pattern. "
-            "Automatically excludes .git, node_modules, and other common directories. "
-            "Use specific patterns (e.g., 'src/**/*.py') instead of broad patterns "
-            "(e.g., '**/*'). Limited to 500 files."
+            "Find files by glob pattern, e.g. '**/*.py' or 'src/**/*.ts'. Common build, "
+            "dependency and VCS directories are excluded. Results are capped at 500."
         ),
         "read_only": True,
-        "estimated_duration": 1,
         "parameters": {
             "type": "object",
             "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": (
-                        "Glob pattern to match files (e.g., '*.py', 'src/**/*.ts'). "
-                        "Use SPECIFIC patterns, not '**/*'"
-                    ),
-                },
+                "pattern": {"type": "string", "description": "Glob pattern"},
                 "directory": {
                     "type": "string",
-                    "description": "Directory to search in (defaults to current directory)",
+                    "description": "Directory to search (default: working directory)",
                 },
             },
             "required": ["pattern"],
@@ -132,24 +138,27 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "search_files",
-        "description": "Search for text content within files using grep-like functionality",
+        "description": (
+            "Search file contents with a regular expression. Returns matching lines as "
+            "path:line: text. Narrow with file_pattern (a glob such as '*.py')."
+        ),
         "read_only": True,
-        "estimated_duration": 2,
         "parameters": {
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Text pattern or regex to search for",
+                    "description": "Regular expression to search for",
                 },
                 "file_pattern": {
                     "type": "string",
-                    "description": "File glob pattern to search within (e.g., '*.py')",
+                    "description": "Glob restricting which files are searched",
                 },
                 "directory": {
                     "type": "string",
-                    "description": "Directory to search in (defaults to current directory)",
+                    "description": "Directory to search (default: working directory)",
                 },
+                "case_insensitive": {"type": "boolean", "description": "Ignore case"},
             },
             "required": ["pattern"],
         },
@@ -157,18 +166,19 @@ TOOL_DEFINITIONS = [
     {
         "name": "run_bash",
         "description": (
-            "Execute a bash command and return its output. "
-            "ALWAYS use this to run Python scripts after creating them (e.g., 'python script.py'). "
-            "Use for testing, verification, and execution."
+            "Run a shell command in the working directory and return stdout, stderr and the "
+            "exit code. Use it to run tests, builds, git and other CLI tools. Prefer the "
+            "file tools over cat/sed/grep for reading, editing and searching files. "
+            "Commands are non-interactive; avoid ones that wait for input."
         ),
         "read_only": False,
-        "estimated_duration": 5,
         "parameters": {
             "type": "object",
             "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The bash command to execute",
+                "command": {"type": "string", "description": "The command to run"},
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default from config, max 600)",
                 },
             },
             "required": ["command"],
@@ -176,66 +186,136 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "create_directory",
-        "description": "Create a new directory",
+        "description": "Create a directory (and any missing parents).",
         "read_only": False,
-        "estimated_duration": 1,
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The path of the directory to create",
-                },
+                "path": {"type": "string", "description": "Directory to create"},
             },
             "required": ["path"],
         },
     },
 ]
 
+TOOLS_BY_NAME = {t["name"]: t for t in TOOL_DEFINITIONS}
+READ_ONLY_TOOLS = {t["name"] for t in TOOL_DEFINITIONS if t["read_only"]}
+FILE_WRITE_TOOLS = {"write_file", "edit_file", "create_directory"}
+
+_JSON_TYPES = {
+    "string": str,
+    "integer": int,
+    "boolean": bool,
+    "number": (int, float),
+    "object": dict,
+    "array": list,
+}
+
+
+def get_tool_specs() -> List[ToolSpec]:
+    """Tool definitions in provider-neutral form."""
+    return [
+        ToolSpec(t["name"], t["description"], t["parameters"]) for t in TOOL_DEFINITIONS
+    ]
+
+
+def validate_arguments(tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
+    """Check arguments against the tool's schema; returns an error message or None."""
+    tool = TOOLS_BY_NAME.get(tool_name)
+    if tool is None:
+        return f"Unknown tool: {tool_name}. Available: {', '.join(TOOLS_BY_NAME)}"
+    schema = tool["parameters"]
+    missing = [name for name in schema.get("required", []) if name not in arguments]
+    if missing:
+        return f"Missing required parameter(s) for {tool_name}: {', '.join(missing)}"
+    for name, value in arguments.items():
+        prop = schema["properties"].get(name)
+        if prop is None:
+            continue  # tolerate extra keys from smaller models
+        expected = _JSON_TYPES.get(prop.get("type"))
+        if expected is None or value is None:
+            continue
+        if (
+            prop["type"] == "integer"
+            and isinstance(value, str)
+            and value.strip().isdigit()
+        ):
+            arguments[name] = int(value)
+            continue
+        if prop["type"] == "boolean" and isinstance(value, str):
+            if value.lower() in ("true", "false"):
+                arguments[name] = value.lower() == "true"
+                continue
+        if not isinstance(value, expected) or (
+            prop["type"] in ("integer", "number") and isinstance(value, bool)
+        ):
+            return f"Parameter '{name}' of {tool_name} must be of type {prop['type']}"
+    return None
+
+
+def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    head = int(limit * 0.7)
+    tail = limit - head
+    omitted = len(text) - limit
+    return (
+        f"{text[:head]}\n\n... [{omitted} characters truncated] ...\n\n{text[-tail:]}"
+    )
+
 
 class ToolExecutor:
-    """Handles execution of tools."""
+    """Executes tools against the filesystem and shell."""
 
     def __init__(
         self,
         working_dir: str = None,
         safety_manager=None,
         max_list_files: int = 500,
+        bash_timeout: int = 120,
+        max_file_size_mb: int = 10,
     ):
         """
         Initialize tool executor.
 
         Args:
-            working_dir: Working directory for file operations (defaults to current directory)
-            safety_manager: Optional SafetyManager for validation
-            max_list_files: Maximum number of files to return from list_files (default: 500)
+            working_dir: Working directory for file operations (default: cwd)
+            safety_manager: Optional SafetyManager (used for file size limits)
+            max_list_files: Maximum number of results from list_files
+            bash_timeout: Default timeout for run_bash in seconds
+            max_file_size_mb: Largest file read_file will load
         """
-        self.working_dir = Path(working_dir) if working_dir else Path.cwd()
+        self.working_dir = Path(working_dir).resolve() if working_dir else Path.cwd()
         self.safety_manager = safety_manager
         self.max_list_files = max_list_files
+        self.bash_timeout = bash_timeout
+        self.max_file_size_mb = max_file_size_mb
+        if safety_manager is not None and hasattr(safety_manager, "config"):
+            self.max_file_size_mb = safety_manager.config.max_file_size_mb
 
-    def _resolve_path(self, path: str) -> Path:
-        """Resolve a path relative to working directory."""
-        p = Path(path)
-        if p.is_absolute():
-            return p
-        return (self.working_dir / p).resolve()
+    def resolve_path(self, path: str) -> Path:
+        """Resolve a path relative to the working directory."""
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            p = self.working_dir / p
+        return p.resolve()
+
+    # Backwards-compatible alias
+    _resolve_path = resolve_path
+
+    def is_inside_working_dir(self, path: str) -> bool:
+        """Whether a path resolves inside the working directory."""
+        try:
+            self.resolve_path(path).relative_to(self.working_dir)
+            return True
+        except ValueError:
+            return False
 
     def _should_exclude_path(self, path: Path) -> bool:
-        """
-        Check if a path should be excluded from listing/searching.
-
-        Args:
-            path: Path to check
-
-        Returns:
-            True if path should be excluded
-        """
-        # Check each part of the path
+        """Whether a path is inside an excluded directory."""
         for part in path.parts:
             if part in EXCLUDED_DIRECTORIES:
                 return True
-            # Handle glob patterns like *.egg-info
             for excluded in EXCLUDED_DIRECTORIES:
                 if "*" in excluded and part.endswith(excluded.replace("*", "")):
                     return True
@@ -245,298 +325,290 @@ class ToolExecutor:
         """
         Execute a tool with given parameters.
 
-        Args:
-            tool_name: Name of the tool to execute
-            parameters: Tool parameters
-
         Returns:
-            Dict with 'success', 'result', and optionally 'error' keys
+            Dict with 'success' and either 'result' or 'error'
         """
+        error = validate_arguments(tool_name, parameters)
+        if error:
+            return {"success": False, "error": error}
+        handler = getattr(self, f"_{tool_name}", None)
+        if handler is None:
+            return {"success": False, "error": f"Unknown tool: {tool_name}"}
         try:
-            if tool_name == "read_file":
-                return self._read_file(parameters)
-            elif tool_name == "write_file":
-                return self._write_file(parameters)
-            elif tool_name == "edit_file":
-                return self._edit_file(parameters)
-            elif tool_name == "list_files":
-                return self._list_files(parameters)
-            elif tool_name == "search_files":
-                return self._search_files(parameters)
-            elif tool_name == "run_bash":
-                return self._run_bash(parameters)
-            elif tool_name == "create_directory":
-                return self._create_directory(parameters)
-            else:
-                return {
-                    "success": False,
-                    "error": f"Unknown tool: {tool_name}",
-                }
+            return handler(parameters)
         except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-            }
+            return {"success": False, "error": f"{type(e).__name__}: {e}"}
+
+    # --- File tools ----------------------------------------------------------
 
     def _read_file(self, params: Dict) -> Dict:
-        """Read a file."""
-        file_path = self._resolve_path(params["file_path"])
-
+        file_path = self.resolve_path(params["file_path"])
         if not file_path.exists():
             return {"success": False, "error": f"File not found: {file_path}"}
-
-        content = file_path.read_text()
-        return {
-            "success": True,
-            "result": f"Content of {file_path}:\n\n{content}",
-        }
-
-    def _write_file(self, params: Dict) -> Dict:
-        """Write to a file."""
-        file_path = self._resolve_path(params["file_path"])
-        content = params["content"]
-
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        file_path.write_text(content)
-        return {
-            "success": True,
-            "result": f"Successfully wrote {len(content)} characters to {file_path}",
-        }
-
-    def _edit_file(self, params: Dict) -> Dict:
-        """Edit a file by replacing text."""
-        file_path = self._resolve_path(params["file_path"])
-        old_string = params["old_string"]
-        new_string = params["new_string"]
-
-        if not file_path.exists():
-            return {"success": False, "error": f"File not found: {file_path}"}
-
-        content = file_path.read_text()
-
-        if old_string not in content:
+        if file_path.is_dir():
             return {
                 "success": False,
-                "error": f"String not found in file: {old_string[:100]}...",
+                "error": f"{file_path} is a directory; use list_files",
+            }
+        size = file_path.stat().st_size
+        if size > self.max_file_size_mb * 1024 * 1024:
+            return {
+                "success": False,
+                "error": (
+                    f"{file_path} is {size / 1024 / 1024:.1f}MB, over the "
+                    f"{self.max_file_size_mb}MB limit. Use run_bash with head/grep instead."
+                ),
+            }
+        data = file_path.read_bytes()
+        if b"\x00" in data[:8192]:
+            return {
+                "success": False,
+                "error": f"{file_path} appears to be a binary file",
+            }
+        lines = data.decode("utf-8", errors="replace").splitlines()
+
+        offset = max(int(params.get("offset") or 1), 1)
+        limit = int(params.get("limit") or DEFAULT_READ_LIMIT)
+        selected = lines[offset - 1 : offset - 1 + limit]
+        if not lines:
+            return {"success": True, "result": f"{file_path} is empty"}
+        if not selected:
+            return {
+                "success": False,
+                "error": f"offset {offset} is past the end of the file ({len(lines)} lines)",
+            }
+        numbered = []
+        for number, line in enumerate(selected, start=offset):
+            if len(line) > MAX_LINE_CHARS:
+                line = line[:MAX_LINE_CHARS] + " [line truncated]"
+            numbered.append(f"{number:>6}\t{line}")
+        result = "\n".join(numbered)
+        end = offset + len(selected) - 1
+        if offset > 1 or end < len(lines):
+            result += f"\n\n[Showing lines {offset}-{end} of {len(lines)}]"
+        return {"success": True, "result": result}
+
+    def _write_file(self, params: Dict) -> Dict:
+        file_path = self.resolve_path(params["file_path"])
+        content = params["content"]
+        existed = file_path.exists()
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content)
+        verb = "Overwrote" if existed else "Created"
+        line_count = content.count("\n") + (
+            0 if content.endswith("\n") or not content else 1
+        )
+        return {"success": True, "result": f"{verb} {file_path} ({line_count} lines)"}
+
+    def _edit_file(self, params: Dict) -> Dict:
+        file_path = self.resolve_path(params["file_path"])
+        old_string = params["old_string"]
+        new_string = params["new_string"]
+        if not file_path.exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
+        if old_string == new_string:
+            return {
+                "success": False,
+                "error": "old_string and new_string are identical",
+            }
+        if old_string == "":
+            return {
+                "success": False,
+                "error": "old_string is empty; use write_file instead",
             }
 
-        new_content = content.replace(old_string, new_string, 1)
+        content = file_path.read_text()
+        count = content.count(old_string)
+        if count == 0:
+            hint = ""
+            if re.match(r"^\s*\d+\t", old_string):
+                hint = " (remove the line-number prefixes copied from read_file output)"
+            return {
+                "success": False,
+                "error": f"old_string not found in {file_path}{hint}",
+            }
+        if count > 1 and not params.get("replace_all"):
+            return {
+                "success": False,
+                "error": (
+                    f"old_string matches {count} places in {file_path}. Include more "
+                    "surrounding context to make it unique, or set replace_all."
+                ),
+            }
+        if params.get("replace_all"):
+            new_content = content.replace(old_string, new_string)
+        else:
+            new_content = content.replace(old_string, new_string, 1)
         file_path.write_text(new_content)
-
+        replaced = count if params.get("replace_all") else 1
         return {
             "success": True,
-            "result": f"Successfully edited {file_path}",
+            "result": f"Edited {file_path} ({replaced} replacement(s))",
         }
 
+    def _create_directory(self, params: Dict) -> Dict:
+        path = self.resolve_path(params["path"])
+        path.mkdir(parents=True, exist_ok=True)
+        return {"success": True, "result": f"Created directory: {path}"}
+
+    # --- Search tools --------------------------------------------------------
+
     def _list_files(self, params: Dict) -> Dict:
-        """
-        List files matching a pattern with intelligent filtering.
-
-        Automatically excludes common directories like .git, node_modules, etc.
-        Limits results to prevent context overflow.
-        """
         pattern = params["pattern"]
-        directory = params.get("directory", ".")
-        search_dir = self._resolve_path(directory)
+        search_dir = self.resolve_path(params.get("directory") or ".")
+        if not search_dir.is_dir():
+            return {"success": False, "error": f"Not a directory: {search_dir}"}
 
-        files = []
-        directories = []
-        excluded_count = 0
-
+        matches = []
+        excluded = 0
         for match in search_dir.glob(pattern):
-            # Skip excluded paths (e.g., .git, node_modules)
-            if self._should_exclude_path(match):
-                excluded_count += 1
-                continue
-
             try:
-                rel_path = match.relative_to(search_dir)
-                if match.is_file():
-                    files.append(str(rel_path))
-                elif match.is_dir():
-                    directories.append(str(rel_path) + "/")
-            except (ValueError, OSError):
-                # Skip paths that can't be processed
+                rel = match.relative_to(search_dir)
+            except ValueError:
                 continue
-
-            # Check if we've hit the limit
-            total_items = len(files) + len(directories)
-            if total_items >= self.max_list_files:
+            if self._should_exclude_path(rel):
+                excluded += 1
+                continue
+            matches.append(str(rel) + ("/" if match.is_dir() else ""))
+            if len(matches) >= self.max_list_files:
                 break
 
-        files.sort()
-        directories.sort()
+        if not matches:
+            note = (
+                f" ({excluded} excluded from .git, node_modules, etc.)"
+                if excluded
+                else ""
+            )
+            return {"success": True, "result": f"No files match {pattern!r}{note}"}
 
-        # Check if we hit the limit
-        total_found = len(files) + len(directories)
-        hit_limit = total_found >= self.max_list_files
-
-        if not files and not directories:
-            if excluded_count > 0:
-                result = (
-                    f"No files or directories found matching pattern: {pattern}\n"
-                    f"(Excluded {excluded_count} items from .git, node_modules, etc.)"
-                )
-            else:
-                result = f"No files or directories found matching pattern: {pattern}"
-        else:
-            dir_count = len(directories)
-            file_count = len(files)
-
-            result = f"Found {dir_count} directories and {file_count} files"
-
-            if excluded_count > 0:
-                result += f" (excluded {excluded_count} from .git, node_modules, etc.)"
-
-            if hit_limit:
-                result += f"\n⚠️  LIMIT REACHED: Showing first {self.max_list_files} items only."
-                result += "\n💡 Use more specific patterns (e.g., 'src/**/*.py' instead of '**/*')"
-
-            result += ":\n"
-
-            if directories:
-                show_dirs = directories[: min(50, len(directories))]
-                result += "\nDirectories:\n" + "\n".join(show_dirs)
-                if len(directories) > 50:
-                    result += f"\n... and {len(directories) - 50} more directories"
-
-            if files:
-                show_files = files[: min(100, len(files))]
-                result += "\n\nFiles:\n" + "\n".join(show_files)
-                if len(files) > 100:
-                    result += f"\n... and {len(files) - 100} more files"
-
-        return {"success": True, "result": result}
+        matches.sort()
+        header = f"{len(matches)} match(es) for {pattern!r} in {search_dir}"
+        if len(matches) >= self.max_list_files:
+            header += f" (limit {self.max_list_files} reached; use a narrower pattern)"
+        return {"success": True, "result": header + ":\n" + "\n".join(matches)}
 
     def _search_files(self, params: Dict) -> Dict:
-        """
-        Search for text in files with intelligent filtering.
-
-        Automatically excludes common directories like .git, node_modules, etc.
-        """
         pattern = params["pattern"]
-        file_pattern = params.get("file_pattern", "**/*")
-        directory = params.get("directory", ".")
-        search_dir = self._resolve_path(directory)
+        file_pattern = params.get("file_pattern")
+        search_dir = self.resolve_path(params.get("directory") or ".")
+        ignore_case = bool(params.get("case_insensitive"))
+        if not search_dir.is_dir():
+            return {"success": False, "error": f"Not a directory: {search_dir}"}
+        try:
+            regex = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
+        except re.error as e:
+            return {"success": False, "error": f"Invalid regular expression: {e}"}
 
-        results = []
-        files_searched = 0
-        files_excluded = 0
-
-        for file_path in search_dir.glob(file_pattern):
-            if not file_path.is_file():
-                continue
-
-            # Skip excluded paths
-            if self._should_exclude_path(file_path):
-                files_excluded += 1
-                continue
-
-            files_searched += 1
-
-            try:
-                content = file_path.read_text()
-                lines = content.split("\n")
-
-                for line_num, line in enumerate(lines, 1):
-                    if pattern in line:
-                        rel_path = file_path.relative_to(search_dir)
-                        results.append(f"{rel_path}:{line_num}: {line.strip()}")
-            except (UnicodeDecodeError, PermissionError):
-                continue
+        results = self._ripgrep(pattern, file_pattern, search_dir, ignore_case)
+        if results is None:
+            results = self._python_grep(regex, file_pattern, search_dir)
 
         if not results:
-            result = f"No matches found for pattern: {pattern}"
-            if files_excluded > 0:
-                result += (
-                    f"\n(Searched {files_searched} files, excluded {files_excluded} "
-                    "from .git, node_modules, etc.)"
-                )
-        else:
-            result = f"Found {len(results)} matches in {files_searched} files"
-            if files_excluded > 0:
-                result += f" (excluded {files_excluded})"
-            result += ":\n" + "\n".join(results[:50])
-            if len(results) > 50:
-                result += f"\n... and {len(results) - 50} more"
+            return {"success": True, "result": f"No matches for {pattern!r}"}
+        shown = results[:200]
+        text = f"{len(results)} match(es) for {pattern!r}:\n" + "\n".join(shown)
+        if len(results) > len(shown):
+            text += f"\n... and {len(results) - len(shown)} more (narrow the search)"
+        return {"success": True, "result": _truncate(text)}
 
-        return {"success": True, "result": result}
+    def _ripgrep(
+        self,
+        pattern: str,
+        file_pattern: Optional[str],
+        search_dir: Path,
+        ignore_case: bool,
+    ) -> Optional[List[str]]:
+        """Search with ripgrep if installed; None if unavailable."""
+        rg = shutil.which("rg")
+        if not rg:
+            return None
+        cmd = [
+            rg,
+            "--line-number",
+            "--no-heading",
+            "--color=never",
+            "--max-columns=500",
+        ]
+        if ignore_case:
+            cmd.append("--ignore-case")
+        for excluded in EXCLUDED_DIRECTORIES:
+            cmd += ["--glob", f"!{excluded}"]
+        if file_pattern:
+            cmd += ["--glob", file_pattern]
+        cmd += ["--regexp", pattern, "."]
+        try:
+            proc = subprocess.run(  # nosec B603 - argv list, no shell
+                cmd, cwd=search_dir, capture_output=True, text=True, timeout=60
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if proc.returncode not in (0, 1):
+            return None
+        return [
+            line[2:] if line.startswith("./") else line
+            for line in proc.stdout.splitlines()
+        ]
+
+    def _python_grep(
+        self, regex, file_pattern: Optional[str], search_dir: Path
+    ) -> List[str]:
+        """Pure-Python fallback search."""
+        results = []
+        glob = file_pattern if file_pattern and "/" in file_pattern else "**/*"
+        for file_path in search_dir.glob(glob):
+            if not file_path.is_file():
+                continue
+            rel = file_path.relative_to(search_dir)
+            if self._should_exclude_path(rel):
+                continue
+            if (
+                file_pattern
+                and "/" not in file_pattern
+                and not file_path.match(file_pattern)
+            ):
+                continue
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    for line_num, line in enumerate(f, 1):
+                        if regex.search(line):
+                            results.append(f"{rel}:{line_num}:{line.rstrip()[:500]}")
+            except (UnicodeDecodeError, PermissionError, OSError):
+                continue
+            if len(results) > 5000:
+                break
+        return results
+
+    # --- Shell ---------------------------------------------------------------
 
     def _run_bash(self, params: Dict) -> Dict:
-        """Run a bash command."""
         command = params["command"]
-
-        if self.safety_manager:
-            is_safe, warning = self.safety_manager.validate_bash_command(command)
-
-            if not is_safe:
-                confirmed = self.safety_manager.get_user_confirmation(warning, command)
-
-                if not confirmed:
-                    return {
-                        "success": False,
-                        "error": "Command cancelled by user (dangerous command)",
-                    }
-
+        timeout = min(int(params.get("timeout") or self.bash_timeout), 600)
+        env = dict(os.environ)
+        env.setdefault("GIT_PAGER", "cat")
+        env.setdefault("PAGER", "cat")
         try:
-            timeout = 30
-            if self.safety_manager and hasattr(self.safety_manager, "config"):
-                timeout = self.safety_manager.config.tool_timeout_seconds
-
-            # nosec B602: shell=True is required for bash command execution
-            # Commands are validated by SafetyManager before execution
-            result = subprocess.run(
+            # nosec B602: running shell commands is this tool's purpose; every
+            # command passes through PermissionManager before reaching here.
+            proc = subprocess.run(
                 command,
                 shell=True,  # nosec
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 cwd=self.working_dir,
+                stdin=subprocess.DEVNULL,
+                env=env,
             )
-
-            output = result.stdout
-            if result.stderr:
-                output += f"\nSTDERR:\n{result.stderr}"
-
-            return {
-                "success": True,
-                "result": f"Command: {command}\nExit code: {result.returncode}\n\n{output}",
-            }
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
+            partial = (e.stdout or "") if isinstance(e.stdout, str) else ""
             return {
                 "success": False,
-                "error": f"Command timed out after {timeout} seconds",
+                "error": f"Command timed out after {timeout}s\n{_truncate(partial)}",
             }
 
-    def _create_directory(self, params: Dict) -> Dict:
-        """Create a directory."""
-        path = self._resolve_path(params["path"])
-        path.mkdir(parents=True, exist_ok=True)
-        return {
-            "success": True,
-            "result": f"Created directory: {path}",
-        }
-
-
-def get_tools_prompt() -> str:
-    """Get a formatted string describing available tools for the LLM."""
-    tools_desc = ""
-
-    for tool in TOOL_DEFINITIONS:
-        tools_desc += f"### {tool['name']}\n"
-        tools_desc += f"{tool['description']}\n\n"
-
-        props = tool["parameters"].get("properties", {})
-        required = tool["parameters"].get("required", [])
-
-        if props:
-            tools_desc += "**Parameters:**\n"
-            for param_name, param_info in props.items():
-                req_marker = " (required)" if param_name in required else " (optional)"
-                param_desc = param_info.get("description", "No description")
-                tools_desc += f"- `{param_name}`: {param_desc}{req_marker}\n"
-
-        tools_desc += "\n"
-
-    return tools_desc
+        output = proc.stdout
+        if proc.stderr:
+            output += ("\n" if output else "") + f"[stderr]\n{proc.stderr}"
+        result = f"Exit code: {proc.returncode}\n{_truncate(output.strip())}".rstrip()
+        # A non-zero exit is information for the model, not a tool failure.
+        return {"success": True, "result": result}

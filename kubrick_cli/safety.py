@@ -65,7 +65,7 @@ class SafetyManager:
         (r"\bsudo\b", "Elevated privileges"),
         (r"\bchmod\s+777", "Overly permissive permissions"),
         (r"\bchmod\s+-R\s+777", "Recursive overly permissive permissions"),
-        (r">\s*/dev/", "Writing to device files"),
+        (r">\s*/dev/(?!(null|stdout|stderr|tty)\b)", "Writing to device files"),
         (r"\bgit\s+push\s+--force", "Force push to git"),
         (r"\bgit\s+push\s+-f", "Force push to git (short form)"),
         (r"\bmkfs\b", "Format filesystem"),
@@ -74,6 +74,8 @@ class SafetyManager:
         (r"\bcurl\b.*\|\s*bash", "Pipe curl to bash"),
         (r"\bwget\b.*\|\s*bash", "Pipe wget to bash"),
         (r"\beval\b.*\$\(", "Eval with command substitution"),
+        (r"--break-system-packages", "Modifies the system Python installation"),
+        (r"\bnpm\s+(install|i)\s+(-g|--global)\b", "Global npm install"),
     ]
 
     def __init__(self, config: SafetyConfig):
@@ -121,7 +123,7 @@ class SafetyManager:
 
         console.print(
             Panel(
-                f"[bold red]⚠️  WARNING[/bold red]\n\n"
+                f"[bold red]WARNING[/bold red]\n\n"
                 f"{warning}\n\n"
                 f"[bold]Command:[/bold]\n"
                 f"[yellow]{command}[/yellow]\n\n"
@@ -137,9 +139,9 @@ class SafetyManager:
         )
 
         if confirmed:
-            console.print("[yellow]⚠️  Proceeding with caution...[/yellow]")
+            console.print("[yellow]Proceeding with caution...[/yellow]")
         else:
-            console.print("[green]✓ Command cancelled[/green]")
+            console.print("[green]Command cancelled[/green]")
 
         return confirmed
 
@@ -158,7 +160,7 @@ class SafetyManager:
 
         if size_bytes > max_bytes:
             console.print(
-                f"[yellow]⚠️  File {file_path} exceeds size limit "
+                f"[yellow]File {file_path} exceeds size limit "
                 f"({size_bytes / 1024 / 1024:.1f}MB > {self.config.max_file_size_mb}MB)[/yellow]"
             )
             return False
@@ -178,7 +180,7 @@ class SafetyManager:
         """
         if current >= max_iterations:
             console.print(
-                f"[yellow]⚠️  Max iteration limit reached ({max_iterations})[/yellow]"
+                f"[yellow]Max iteration limit reached ({max_iterations})[/yellow]"
             )
             return False
 
@@ -197,7 +199,7 @@ class SafetyManager:
         """
         if current > max_tools:
             console.print(
-                f"[yellow]⚠️  Too many tool calls ({current} > {max_tools})[/yellow]"
+                f"[yellow]Too many tool calls ({current} > {max_tools})[/yellow]"
             )
             return False
 
