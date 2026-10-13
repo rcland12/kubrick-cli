@@ -15,7 +15,7 @@ authors = [
 dependencies = [
     "rich>=13.0.0",
     "prompt_toolkit>=3.0.36",
-    "cryptography>=42.0.0",
+    "cryptography>=50.0.2",
 ]
 
 [project.urls]
