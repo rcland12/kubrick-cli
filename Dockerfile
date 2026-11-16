@@ -1,11 +1,11 @@
-FROM python:3.14-slim AS builder
+FROM python:3.15-slim AS builder
 WORKDIR /app
 SHELL ["/bin/sh", "-euxc"]
 COPY . .
 RUN pip install --no-cache-dir --upgrade pip build && \
     python -m build --wheel
 
-FROM python:3.14-slim AS runtime
+FROM python:3.15-slim AS runtime
 LABEL org.opencontainers.image.source="https://github.com/rcland12/kubrick-cli"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.title="kubrick-cli"
